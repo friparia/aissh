@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"git.example.com/ai/wrd-ai-cli/internal/agent"
 	"git.example.com/ai/wrd-ai-cli/internal/catalog"
 	"git.example.com/ai/wrd-ai-cli/internal/credentialui"
 	"git.example.com/ai/wrd-ai-cli/internal/history"
@@ -278,5 +279,113 @@ func TestCLIConversationSwitchUpdatesDesktopAssociation(t *testing.T) {
 	}
 	if s.ListSessions()[0].ConversationID != "selected-in-cli" {
 		t.Fatal("session list retained stale conversation")
+	}
+}
+
+func TestConversationAISelectionPersistsAndOverridesHostDefault(t *testing.T) {
+	s, host, _ := conversationService(t)
+	first, err := s.SaveAIProfile(catalog.AIProfile{Name: "host model", Provider: "model", URL: "http://models.internal/v1", Model: "first"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.SaveAIProfile(catalog.AIProfile{Name: "conversation model", Provider: "model", URL: "http://other.internal/v1", Model: "second", Models: []string{"third"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.AIProfileID = first.ID
+	host.Workspace = t.TempDir()
+	if _, err := s.SaveHost(host); err != nil {
+		t.Fatal(err)
+	}
+	for _, selected := range []string{second.ID, catalog.BuiltinCodexProfileID, ""} {
+		workspace := host.Workspace
+		if selected == second.ID {
+			workspace = filepath.Join(host.Workspace, "missing")
+		}
+		created, err := s.CreateConversationWithAI(host.ID, workspace, selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := selected
+		if expected == "" {
+			expected = first.ID
+		}
+		restarted := New(s.store)
+		t.Cleanup(func() { Shutdown(restarted) })
+		conversation, err := restarted.conversation(host.ID, created.ID)
+		if err != nil || conversation.AIProfileID != expected {
+			t.Fatalf("conversation=%+v err=%v", conversation, err)
+		}
+		if expected != catalog.BuiltinCodexProfileID && (conversation.Workspace == nil || *conversation.Workspace != "") {
+			t.Fatal("API model retained local workspace")
+		}
+		opened, err := restarted.OpenConversationSession(host.ID, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err := restarted.session(opened.ID)
+		if err != nil || session.aiProfileID != expected {
+			t.Fatalf("selected session profile=%q err=%v", session.aiProfileID, err)
+		}
+		session.finish("ended")
+		reconnected, err := restarted.ReconnectSession(opened.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err = restarted.session(reconnected.ID)
+		if err != nil || session.aiProfileID != expected {
+			t.Fatal("reconnect changed AI profile")
+		}
+	}
+	data, _ := s.store.Load()
+	saved, _ := data.Host(host.ID)
+	if saved.AIProfileID != first.ID || saved.Workspace != host.Workspace {
+		t.Fatal("new conversation changed host defaults")
+	}
+	before, _ := s.ListConversations()
+	if _, err := s.CreateConversationWithAI(host.ID, "", "missing"); err == nil {
+		t.Fatal("unknown AI profile accepted")
+	}
+	after, _ := s.ListConversations()
+	if len(before) != len(after) {
+		t.Fatal("invalid AI choice created conversation")
+	}
+	direct, err := s.CreateDirectConversationWithAI(catalog.Host{Address: "direct.example", Port: 22}, false, second.ID)
+	if err != nil || direct.Conversation.AIProfileID != second.ID {
+		t.Fatalf("direct=%+v err=%v", direct, err)
+	}
+	provider, _, err := s.knowledgeProviderWithModel(host.ID, second.ID, "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.(*agent.DirectModelProvider).CurrentModel() != "third" {
+		t.Fatal("conversation summary did not use selected model")
+	}
+}
+
+func TestConversationCredentialsFollowSelectedAIProfile(t *testing.T) {
+	s, host, _ := conversationService(t)
+	profiles := make([]catalog.AIProfile, 2)
+	credentials := make([]catalog.Credential, 2)
+	for i := range profiles {
+		credential, err := s.SaveCredential(catalog.CredentialInput{Credential: catalog.Credential{Name: fmt.Sprintf("key-%d", i), Kind: "token"}, Secret: fmt.Sprintf("token-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		credentials[i] = credential
+		profile, err := s.SaveAIProfile(catalog.AIProfile{Name: fmt.Sprintf("model-%d", i), Provider: "model", URL: "http://models.internal/v1", Model: "test", CredentialID: credential.ID}, i == 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profiles[i] = profile
+	}
+	if !s.boundCredentialForProfile(host.ID, credentials[1].ID, profiles[1].ID) {
+		t.Fatal("selected AI credential was not authorized")
+	}
+	if s.boundCredentialForProfile(host.ID, credentials[0].ID, profiles[1].ID) {
+		t.Fatal("default model credential leaked into selected conversation")
+	}
+	if s.boundCredentialForProfile(host.ID, credentials[1].ID, catalog.BuiltinCodexProfileID) {
+		t.Fatal("builtin Codex requested model API credential")
 	}
 }

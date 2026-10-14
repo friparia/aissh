@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hinshun/vt10x"
@@ -41,9 +42,73 @@ func (a *App) sendApprovedCommand(state *executionState) {
 		a.stopExecutionWait("transport_error")
 		return
 	}
-	data := []byte(isolateApprovedCommand(state.Command, state.Marker))
-	a.debugInput("execution send marker=%s command_bytes=%d wrapper_bytes=%d", state.Marker, len(state.Command), len(data))
-	state.WriteJob = a.sshInput.enqueue(data, state.Marker, false)
+	state.BastionCompatibility = a.config.BastionCompatibility
+	state.Multiline = strings.ContainsAny(state.Command, "\r\n")
+	state.ShellPrompt = ""
+	if a.virtual != nil {
+		a.virtual.Lock()
+		line, ok := a.terminalCursorLineLocked()
+		if ok && a.virtual.CursorVisible() && a.safePromptScreenLocked() && trigger.LooksLikePrompt(line) {
+			state.ShellPrompt = strings.TrimSpace(line)
+		}
+		a.virtual.Unlock()
+	}
+	state.Direct = state.BastionCompatibility || state.ShellPrompt != ""
+	state.EchoMarker = !state.Direct
+	marker := ""
+	if state.EchoMarker {
+		marker = state.Marker
+	}
+	input := approvedShellInput(state.Command, marker)
+	if state.BastionCompatibility {
+		input = rawApprovedShellInput(state.Command)
+	}
+	data := []byte(input)
+	a.outputTail.value = ""
+	a.debugInput("execution send marker=%s command_bytes=%d prompt_mode=%t", state.Marker, len(data), state.Direct)
+	state.WriteJob = a.sshInput.enqueueApprovedCommand(data, state.Marker, a.config.BastionCompatibility)
+}
+
+// Like iTerm2's shellInput, keep multiline scripts in the current shell and
+// append an echo receipt only when a primary prompt cannot be recognised.
+func approvedShellInput(command, marker string) string {
+	command = strings.ReplaceAll(strings.ReplaceAll(command, "\r\n", "\n"), "\r", "\n")
+	if strings.Contains(command, "\n") || marker != "" {
+		command = "eval " + quotePOSIXShell(command)
+	}
+	if marker != "" {
+		command += "; echo '-- FINISHED' " + quotePOSIXShell(marker)
+	}
+	return strings.ReplaceAll(command, "\n", approvedCommandLineEnding()) + "\r"
+}
+
+const executionPromptQuietDelay = 300 * time.Millisecond
+
+func (a *App) checkDirectExecutionPrompt(now time.Time) {
+	state := a.execution
+	if state == nil || state.BastionCompatibility || !state.Direct || state.finished() || state.sending() || a.executionRecovery || a.sensitive || a.zmodem != nil || state.LastOutputAt.IsZero() || now.Sub(state.LastOutputAt) < executionPromptQuietDelay || a.virtual == nil || !trigger.LooksLikePrompt(a.outputTail.String()) {
+		return
+	}
+	a.virtual.Lock()
+	line, ok := a.terminalCursorLineLocked()
+	visible := a.virtual.CursorVisible()
+	alt := a.virtual.Mode()&vt10x.ModeAltScreen != 0
+	a.virtual.Unlock()
+	if !ok || !visible || !trigger.LooksLikePrompt(line) {
+		return
+	}
+	// A menu's numbered options and PS2 must not look like completion. Accept
+	// the prompt seen before sending, or a primary user@host shell prompt (which
+	// may change after cd). Alternate-screen menus require the latter.
+	known := state.ShellPrompt != "" && strings.TrimSpace(line) == state.ShellPrompt
+	if !trigger.LooksLikeShellPrompt(line) && (!known || alt) {
+		return
+	}
+	state.Completion = "shell_prompt_returned"
+	a.atPrompt = true
+	a.promptIdleSince = now
+	a.pendingError, a.errorCarry = nil, ""
+	a.dirty = true
 }
 
 func (a *App) finishSSHWrite(event sshWriteEvent) {
@@ -149,7 +214,34 @@ func (a *App) safePromptScreen() bool {
 	}
 	a.virtual.Lock()
 	defer a.virtual.Unlock()
-	return a.virtual.Mode()&vt10x.ModeAltScreen == 0 && a.virtual.CursorVisible()
+	return a.safePromptScreenLocked()
+}
+
+// Some SSH gateways keep their menu's alternate screen active after entering
+// a node shell. Only a visible user@host primary prompt permits shell actions
+// in that mode; generic editor and menu prompts must still pass through.
+func (a *App) safePromptScreenLocked() bool {
+	if !a.virtual.CursorVisible() {
+		return false
+	}
+	if a.virtual.Mode()&vt10x.ModeAltScreen == 0 {
+		return true
+	}
+	line, ok := a.terminalCursorLineLocked()
+	return a.gatewayShellPrompt && ok && trigger.LooksLikeShellPrompt(line)
+}
+
+func (a *App) refreshGatewayShellPrompt() {
+	// Never learn a gateway shell from a full-screen application encountered
+	// during command execution or recovery. A previously observed shell may
+	// still recover in the same alternate screen after Ctrl+C.
+	if a.virtual == nil || a.execution != nil || a.executionRecovery || a.inBandMonitor != nil || a.monitorAwaitingPrompt || len(a.lineInput) != 0 || a.aiLineCapture {
+		return
+	}
+	a.virtual.Lock()
+	defer a.virtual.Unlock()
+	line, ok := a.terminalCursorLineLocked()
+	a.gatewayShellPrompt = a.virtual.Mode()&vt10x.ModeAltScreen != 0 && a.virtual.CursorVisible() && ok && trigger.LooksLikeShellPrompt(line)
 }
 
 func (a *App) tryRecoverExecutionPrompt() {
@@ -182,20 +274,31 @@ func (a *App) tryRecoverExecutionPrompt() {
 }
 
 func (a *App) checkExecutionWait(now time.Time) {
+	a.checkBastionExecutionPrompt()
+	a.checkDirectExecutionPrompt(now)
 	state := a.execution
 	if state == nil || state.finished() || state.WaitWarned || state.StartedAt.IsZero() || now.Sub(state.StartedAt) < executionWaitNoticeDelay {
 		return
 	}
 	state.WaitWarned = true
-	a.appendPersistentChat(chatMessage{Role: "system", Content: a.t("仍未收到命令完成标记；按 Ctrl+C 中断并重新同步 Shell。"), Time: now})
+	notice := a.t("仍未收到命令完成标记；按 Ctrl+C 中断并重新同步 Shell。")
+	if state.BastionCompatibility {
+		notice = a.t("等待收集输出；没有 Shell Integration 或多行命令，请点击‘收集输出’。该操作不会中断远端命令。")
+	} else if state.Direct {
+		notice = a.t("仍在等待 Shell 返回提示符；需要人工交互时可取消 AI 并接管终端。")
+	}
+	a.appendPersistentChat(chatMessage{Role: "system", Content: notice, Time: now})
 	a.debugInput("execution waiting marker=%s sending=%t pending_bytes=%d", state.Marker, state.sending(), len(state.Pending))
 	a.dirty = true
 }
 
 func (a *App) retireExecution(state *executionState) {
+	if state.Direct {
+		return
+	}
 	// Keep parsers for recent commands to absorb duplicate/late markers, including
 	// ones split across reads, without treating them as the next command's result.
-	a.retiredExecutions = append(a.retiredExecutions, &executionState{Marker: state.Marker, Pending: state.Pending})
+	a.retiredExecutions = append(a.retiredExecutions, &executionState{Marker: state.Marker, Pending: state.Pending, EchoMarker: state.EchoMarker, TextMarker: state.TextMarker})
 	if len(a.retiredExecutions) > 32 {
 		a.retiredExecutions = a.retiredExecutions[1:]
 	}
@@ -205,12 +308,15 @@ func (a *App) filterRetiredExecutionMarkers(data []byte) []byte {
 	for _, state := range a.retiredExecutions {
 		var visible []byte
 		for {
+			if state.EchoMarker {
+				state.ReceiptReceived = false
+			}
 			output, after, code := state.consume(data)
 			visible = append(visible, output...)
-			if code == nil {
+			if code == nil && !state.ReceiptReceived {
 				break
 			}
-			a.debugInput("execution ignored late marker=%s exit_status=%d", state.Marker, *code)
+			a.debugInput("execution ignored late marker=%s", state.Marker)
 			data = after
 		}
 		data = visible

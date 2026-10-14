@@ -5,6 +5,7 @@ import { Empty, ErrorBox } from './components';
 import { sessionAddress } from './api';
 import { commandRisk } from './risk';
 import { ChatContent } from './ChatContent';
+import { CodexResume } from './CodexResume';
 
 export const conversationKey = (c: Pick<Conversation, 'hostId' | 'id'>) => c.hostId + '/' + c.id;
 const roles: Record<string, string> = {
@@ -100,6 +101,7 @@ export function Conversations({
             <small>本机保存的对话记录</small>
           </div>
         </header>
+        <CodexResume threadId={current.codexThreadId} />
         <div className="native-chat-messages" key={key}>
           {detail?.key !== key ? (
             <p className="subtle">正在读取对话…</p>

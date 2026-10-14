@@ -83,12 +83,22 @@ func (a *App) processSSHOutput(data []byte) {
 }
 
 func (a *App) processRegularSSHOutput(data []byte) {
-	if state := a.execution; state != nil && state.ExitCode == nil {
+	if state := a.execution; state != nil && state.BastionCompatibility {
+		state.observeShellIntegration(data)
+		a.processVisibleSSHOutput(data)
+		a.checkBastionExecutionPrompt()
+		a.submitExecutionResult()
+		return
+	}
+	if state := a.execution; state != nil && !state.Direct && state.ExitCode == nil && (!state.EchoMarker || !state.ReceiptReceived) {
 		output, after, exitCode := state.consume(data)
 		a.processVisibleSSHOutput(output)
-		if exitCode != nil {
+		if exitCode != nil || state.ReceiptReceived {
 			state.ExitCode = exitCode
-			a.debugInput("execution marker=%s exit_status=%d reason=%s", state.Marker, *exitCode, state.Completion)
+			if state.ReceiptReceived && state.Completion == "" {
+				state.Completion = "completion_marker_received"
+			}
+			a.debugInput("execution marker=%s reason=%s", state.Marker, state.Completion)
 			// Prompt detection must only see fresh output after completion.
 			a.outputTail.value = ""
 			a.processVisibleSSHOutput(after)
@@ -158,12 +168,15 @@ func (a *App) enterZmodemPassthrough(data []byte) {
 // its completion marker out of the binary channel and restore the TUI before
 // analyzing the result; otherwise the marker would be lost in raw output.
 func (a *App) processZmodemOutput(data []byte) {
-	if state := a.execution; state != nil && state.ExitCode == nil {
+	if state := a.execution; state != nil && !state.Direct && state.ExitCode == nil && (!state.EchoMarker || !state.ReceiptReceived) {
 		output, after, exitCode := state.consume(data)
 		a.handleZmodemOutput(output)
-		if exitCode != nil {
+		if exitCode != nil || state.ReceiptReceived {
 			state.ExitCode = exitCode
-			a.debugInput("execution marker=%s exit_status=%d reason=%s", state.Marker, *exitCode, state.Completion)
+			if state.ReceiptReceived && state.Completion == "" {
+				state.Completion = "completion_marker_received"
+			}
+			a.debugInput("execution marker=%s reason=%s", state.Marker, state.Completion)
 			a.leaveZmodemPassthrough()
 			a.outputTail.value = ""
 			a.processVisibleSSHOutput(after)

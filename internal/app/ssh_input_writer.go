@@ -5,6 +5,8 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
+	"unicode/utf8"
 )
 
 // One writer owns the PTY input stream, including terminal replies and keyboard
@@ -24,6 +26,7 @@ type sshWriteJob struct {
 	data      []byte
 	marker    string
 	interrupt bool
+	keystroke bool
 	cancelled atomic.Bool
 	started   atomic.Bool
 	done      atomic.Bool
@@ -36,6 +39,7 @@ type sshWriteEvent struct {
 }
 
 const sshWriteChunkSize = 256
+const sshKeystrokeInterval = 12 * time.Millisecond
 
 func newSSHInputWriter(ctx context.Context, target io.Writer, events chan interface{}) *sshInputWriter {
 	w := &sshInputWriter{ctx: ctx, target: target, events: events, wake: make(chan struct{}, 1)}
@@ -45,6 +49,15 @@ func newSSHInputWriter(ctx context.Context, target io.Writer, events chan interf
 
 func (w *sshInputWriter) enqueue(data []byte, marker string, interrupt bool) *sshWriteJob {
 	job := &sshWriteJob{data: append([]byte(nil), data...), marker: marker, interrupt: interrupt}
+	return w.enqueueJob(job)
+}
+
+func (w *sshInputWriter) enqueueApprovedCommand(data []byte, marker string, keystroke bool) *sshWriteJob {
+	job := &sshWriteJob{data: append([]byte(nil), data...), marker: marker, keystroke: keystroke}
+	return w.enqueueJob(job)
+}
+
+func (w *sshInputWriter) enqueueJob(job *sshWriteJob) *sshWriteJob {
 	w.mu.Lock()
 	w.queue = append(w.queue, job)
 	w.mu.Unlock()
@@ -108,16 +121,32 @@ func (w *sshInputWriter) write(job *sshWriteJob) (int, error) {
 			return written, err
 		}
 		end := min(written+sshWriteChunkSize, len(job.data))
-		n, err := w.target.Write(job.data[written:end])
-		if n < 0 || n > end-written {
-			return written, io.ErrShortWrite
+		if job.keystroke {
+			_, size := utf8.DecodeRune(job.data[written:end])
+			end = written + size
 		}
-		written += n
-		if err != nil {
-			return written, err
+		for offset := written; offset < end; {
+			n, err := w.target.Write(job.data[offset:end])
+			if n < 0 || n > end-offset {
+				return written, io.ErrShortWrite
+			}
+			offset += n
+			written += n
+			if err != nil {
+				return written, err
+			}
+			if n == 0 {
+				return written, io.ErrShortWrite
+			}
 		}
-		if n == 0 {
-			return written, io.ErrShortWrite
+		if job.keystroke && written < len(job.data) {
+			timer := time.NewTimer(sshKeystrokeInterval)
+			select {
+			case <-timer.C:
+			case <-w.ctx.Done():
+				timer.Stop()
+				return written, w.ctx.Err()
+			}
 		}
 	}
 	return written, nil

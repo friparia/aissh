@@ -47,3 +47,20 @@ func TestPromptRequiresCurrentPrimaryPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestShellPromptRequiresUserAndHost(t *testing.T) {
+	for _, value := range []string{
+		"[deployer@SZJD-YFQ-PM-OS01-BCONEST-BEAZ-OBSERVER-01 ~]$ ",
+		"[root@node /var/log]# ", "ops@node:~$ ",
+		"\x1b[32mroot@node:/tmp# \x1b[0m",
+	} {
+		if !LooksLikeShellPrompt(value) {
+			t.Errorf("shell prompt not detected: %q", value)
+		}
+	}
+	for _, value := range []string{"请输入 : ", "编辑器> ", "prompt> ", "$ ", "Password: ", "> root@node:~$ ", "ops@node:~$ \r\n"} {
+		if LooksLikeShellPrompt(value) {
+			t.Errorf("non-shell prompt accepted: %q", value)
+		}
+	}
+}

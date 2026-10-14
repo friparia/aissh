@@ -46,6 +46,8 @@ frontend-test:
 package:
   extends: .go-job
   stage: package
+  variables:
+    BUILD_TARGETS: "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
   rules:
     - if: '$AISSH_LOCAL_RELEASE == "true"'
       when: never

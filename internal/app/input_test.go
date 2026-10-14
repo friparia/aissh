@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -194,6 +195,118 @@ func TestVisiblePromptFallbackIsDisabledOnAlternateScreen(t *testing.T) {
 	}
 	if got, want := string(written), "中文\r"; got != want {
 		t.Fatalf("SSH input=%q, want %q", got, want)
+	}
+}
+
+func TestAICommandOpensConversationAfterNodeSelection(t *testing.T) {
+	for _, input := range []string{"/ai", "  /AI  ", "\x1b[200~/ai\x1b[201~"} {
+		t.Run(input, func(t *testing.T) {
+			application, err := New(Config{SSHArgs: []string{"sdp"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			defer writer.Close()
+			application.sshPTY = writer
+			application.agent = terminalInputTestProvider{}
+			application.mainCols = 80
+			application.contentRows = 24
+			application.virtual = vt10x.New(vt10x.WithSize(80, 24))
+			application.handleTerminalInput([]byte("1\r"))
+			prompt := []byte("\r\nroot@node:~# ")
+			_, _ = application.virtual.Write(prompt)
+			application.handleOutput(prompt)
+
+			application.handleInput([]byte(input))
+			if application.focus != focusTerminal {
+				t.Fatal("AI conversation opened before Enter")
+			}
+			application.handleInput([]byte{'\r'})
+			if application.focus != focusAI || !application.aiExpanded || application.sidebarCollapsed {
+				t.Fatalf("AI conversation did not open: focus=%v expanded=%v collapsed=%v", application.focus, application.aiExpanded, application.sidebarCollapsed)
+			}
+			if application.agentBusy || application.inlineAI != nil || len(application.lineInput) != 0 {
+				t.Fatal("opening the conversation submitted an AI request or retained terminal input")
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			written, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "1\r" + input + "\x15"
+			if strings.HasPrefix(input, "\x1b[200~") {
+				want = "1\r"
+			}
+			if string(written) != want {
+				t.Fatalf("SSH input=%q, want %q", written, want)
+			}
+		})
+	}
+}
+
+func TestGatewayAlternateScreenShellStartsAI(t *testing.T) {
+	for _, outputFallback := range []bool{false, true} {
+		t.Run(fmt.Sprint(outputFallback), func(t *testing.T) {
+			a, err := New(Config{SSHArgs: []string{"sdp"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			defer writer.Close()
+			a.sshPTY = writer
+			a.agent = terminalInputTestProvider{}
+			a.mainCols, a.contentRows = 100, 24
+			a.virtual = vt10x.New(vt10x.WithSize(100, 24))
+			a.processSSHOutput([]byte("\x1b[?1049h\x1b[2J\x1b[H请输入 : "))
+			if a.atPrompt || a.safePromptScreen() {
+				t.Fatal("gateway menu was treated as a shell")
+			}
+			a.handleInput([]byte("1\r"))
+			prompt := []byte("\r\n[deployer@SZJD-YFQ-PM-OS01-BCONEST-BEAZ-OBSERVER-01 ~]$ ")
+			if outputFallback {
+				_, _ = a.virtual.Write(prompt)
+			} else {
+				for _, b := range prompt {
+					a.processSSHOutput([]byte{b})
+				}
+			}
+			a.handleInput([]byte("/ai "))
+			// Remote echo must not revoke a recognised prompt while typing.
+			a.processSSHOutput([]byte("/ai "))
+			a.handleInput([]byte("当前top 10 cpu 进程\r"))
+			if a.inlineAI == nil || a.inlineAI.Prompt != "当前top 10 cpu 进程" || !a.agentBusy {
+				t.Fatalf("gateway shell did not start AI: prompt=%t inline=%#v", a.atPrompt, a.inlineAI)
+			}
+			// Ctrl+U erases the remotely echoed question without a newline or
+			// a fresh prompt in the byte tail. The visible shell is still ready.
+			a.processSSHOutput([]byte("\b \b\b \b\b \b\b \b"))
+			if !a.atPrompt || !a.safePromptScreen() {
+				t.Fatal("clearing the AI question lost the visible gateway shell prompt")
+			}
+			writer.Close()
+			written, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "1\r/ai 当前top 10 cpu 进程\x15"; string(written) != want {
+				t.Fatalf("SSH input=%q, want %q", written, want)
+			}
+			// Logging out to the gateway must revoke the shell prompt again.
+			a.processSSHOutput([]byte("\x1b[2J\x1b[H请输入 : "))
+			if a.atPrompt || a.safePromptScreen() {
+				t.Fatal("returning to the gateway retained shell prompt state")
+			}
+		})
 	}
 }
 

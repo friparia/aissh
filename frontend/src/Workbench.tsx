@@ -11,6 +11,7 @@ import { CommandReview } from './CommandReview';
 import { useChatSubmit } from './useChatSubmit';
 import { useWorkbenchSplit } from './useWorkbenchSplit';
 import { WorkspaceEditor } from './Workspace';
+import { CodexResume } from './CodexResume';
 
 export function Workbench({
   session,
@@ -30,6 +31,7 @@ export function Workbench({
   const [state, setState] = useState<WorkbenchState | null>(null);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
   const [prompt, setPrompt] = useState('');
   const [editingWorkspace, setEditingWorkspace] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -96,20 +98,31 @@ export function Workbench({
       setPending(false);
     }
   }
-  const blocked = !online || pending || state?.busy || state?.executing || !!state?.proposal;
+  const blocked =
+    !online ||
+    pending ||
+    state?.busy ||
+    state?.executing ||
+    !!state?.proposal ||
+    state?.terminalTakeover;
+  useEffect(() => {
+    if (active && state?.terminalTakeover) setTerminalFocusRequest((value) => value + 1);
+  }, [active, state?.terminalTakeover]);
   const status = !sessionLive(session)
     ? '连接已结束'
     : !state
       ? '正在连接工作台…'
       : !online
         ? '工作台连接中断'
-        : state.executing
-          ? '正在执行命令'
-          : state.busy
-            ? state.status || 'AI 正在处理…'
-            : state.proposal
-              ? '等待确认命令'
-              : '就绪';
+        : state.terminalTakeover
+          ? '终端已接管，请在右侧终端完成或退出审批'
+          : state.executing
+            ? '正在执行命令'
+            : state.busy
+              ? state.status || 'AI 正在处理…'
+              : state.proposal
+                ? '等待确认命令'
+                : '就绪';
   return (
     <div
       ref={split.ref}
@@ -126,6 +139,7 @@ export function Workbench({
         active={active}
         candidates={state?.widgetCandidates}
         panels={state?.panels || []}
+        systemCollection={state?.systemCollection ?? false}
         online={online}
         pending={pending}
         now={now}
@@ -146,6 +160,25 @@ export function Workbench({
             </small>
           </div>
         </header>
+        <CodexResume threadId={state?.codexThreadId} />
+        {!!state?.modelOptions?.length && (
+          <div className="chat-workspace chat-model">
+            <label htmlFor={'model-' + session.id}>AI 模型</label>
+            <select
+              id={'model-' + session.id}
+              aria-label="当前 AI 模型"
+              value={state.model || ''}
+              disabled={!!blocked}
+              onChange={(event) => void action({ kind: 'model', text: event.target.value })}
+            >
+              {state.modelOptions.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {state && (
           <div className="chat-workspace" aria-label="当前 AI 工作目录">
             <FolderOpen size={14} />
@@ -262,7 +295,45 @@ export function Workbench({
             {...chatSubmit}
           />
           <div className="composer-actions">
-            <small>Enter 发送 · Shift + Enter 换行</small>
+            <button
+              className="button small"
+              type="button"
+              disabled={!online || pending}
+              onClick={async () => {
+                if (await action({ kind: 'terminal-takeover' })) {
+                  setTerminalFocusRequest((value) => value + 1);
+                }
+              }}
+              title="取消本地 AI 等待并暂停自动采集，将输入交回终端；不会自动结束远端命令"
+            >
+              取消 AI，接管终端
+            </button>
+            <button
+              className={'button small' + (state?.bastionCompatibility ? ' primary' : '')}
+              type="button"
+              disabled={!online || pending}
+              aria-pressed={state?.bastionCompatibility ?? false}
+              onClick={() =>
+                void action({
+                  kind: 'bastion-compatibility',
+                  text: String(!state?.bastionCompatibility),
+                })
+              }
+              title="仅本会话生效：逐字符原样发送已批准命令，不添加包装；无 Shell Integration 或多行命令需手动收集输出"
+            >
+              堡垒机兼容模式：{state?.bastionCompatibility ? '开' : '关'}
+            </button>
+            {state?.canCollectOutput && (
+              <button
+                className="button small"
+                type="button"
+                disabled={!online || pending}
+                onClick={() => void action({ kind: 'execution-collect' })}
+                title="收集已收到的输出交给 AI，不发送 Ctrl+C；远端命令可能仍在运行"
+              >
+                收集输出
+              </button>
+            )}
             <button className="button primary small" disabled={blocked || !prompt.trim()}>
               <Send size={14} />
               发送
@@ -273,6 +344,7 @@ export function Workbench({
       {split.divider}
       <div className="native-ssh">
         <Terminal
+          focusRequest={terminalFocusRequest}
           session={session}
           active={active}
           onReconnect={onReconnect}

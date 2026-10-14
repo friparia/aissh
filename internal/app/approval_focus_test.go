@@ -60,7 +60,7 @@ func TestApprovalRetainsInputAfterTerminalScroll(t *testing.T) {
 					a.handleInput([]byte("\r"))
 					select {
 					case event := <-a.events:
-						if _, ok := event.(approvalEvent); !ok {
+						if _, ok := unwrapAgentTestEvent(event).(approvalEvent); !ok {
 							t.Fatalf("expected approval, got %T", event)
 						}
 					case <-time.After(time.Second):
@@ -110,7 +110,7 @@ func TestApprovalRegainsFocusFromSidebar(t *testing.T) {
 					a.handleInput([]byte("no\r"))
 					select {
 					case event := <-a.events:
-						if _, ok := event.(rejectionEvent); !ok {
+						if _, ok := unwrapAgentTestEvent(event).(rejectionEvent); !ok {
 							t.Fatalf("expected rejection, got %T", event)
 						}
 					case <-time.After(time.Second):

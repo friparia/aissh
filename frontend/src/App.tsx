@@ -352,7 +352,7 @@ export function App() {
     try {
       let conversation: Conversation;
       if (input.kind === 'direct') {
-        const result = await api.CreateDirectConversation(input.host, input.saveHost);
+        const result = await api.CreateDirectConversationWithAI(input.host, input.saveHost, input.aiProfileId);
         conversation = result.conversation;
         setData((previous) =>
           input.saveHost
@@ -363,7 +363,7 @@ export function App() {
               },
         );
       } else {
-        conversation = await api.CreateConversationWithWorkspace(input.hostId, input.workspace);
+        conversation = await api.CreateConversationWithAI(input.hostId, input.workspace, input.aiProfileId);
       }
       created = true;
       restoreSidebarHost(conversation.hostId);

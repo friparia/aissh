@@ -6,8 +6,8 @@ import { CredentialField, HostNameField } from './forms';
 import { WorkspaceField } from './Workspace';
 
 export type NewConversationInput =
-  | { kind: 'existing'; hostId: string; workspace: string }
-  | { kind: 'direct'; host: Host; saveHost: boolean };
+  | { kind: 'existing'; hostId: string; workspace: string; aiProfileId: string }
+  | { kind: 'direct'; host: Host; saveHost: boolean; aiProfileId: string };
 
 export function NewConversation({
   data,
@@ -54,8 +54,10 @@ export function NewConversation({
     mode === 'direct'
       ? host.workspace
       : (directories[selectedHostId] ?? selectedHost?.workspace ?? '');
-  const profileId =
+  const [aiProfileId, setAIProfileId] = useState('');
+  const inheritedProfileId =
     (mode === 'direct' ? host.aiProfileId : selectedHost?.aiProfileId) || data.defaultAIProfileId;
+  const profileId = aiProfileId || inheritedProfileId;
   const provider = data.aiProfiles.find((profile) => profile.id === profileId)?.provider || 'codex';
   const workspaceSupported = ['codex', 'local', 'claude'].includes(provider);
   const field = (key: keyof Host, value: string | number) =>
@@ -73,8 +75,18 @@ export function NewConversation({
           if (mode === 'existing' && !selectedHostId) return;
           onCreate(
             mode === 'existing'
-              ? { kind: 'existing', hostId: selectedHostId, workspace }
-              : { kind: 'direct', host, saveHost },
+              ? {
+                  kind: 'existing',
+                  hostId: selectedHostId,
+                  workspace: workspaceSupported ? workspace : '',
+                  aiProfileId,
+                }
+              : {
+                  kind: 'direct',
+                  host: { ...host, workspace: workspaceSupported ? workspace : '' },
+                  saveHost,
+                  aiProfileId,
+                },
           );
         }}
       >
@@ -211,7 +223,7 @@ export function NewConversation({
                   <p className="field-note">不加入主机列表；连接信息随对话保留，便于以后继续。</p>
                 )}
                 <details className="advanced">
-                  <summary>跳板机和 AI 配置</summary>
+                  <summary>跳板机</summary>
                   <Field label="跳板机">
                     <select
                       value={host.jumpHostId}
@@ -225,22 +237,39 @@ export function NewConversation({
                       ))}
                     </select>
                   </Field>
-                  <Field label="AI 配置">
-                    <select
-                      value={host.aiProfileId}
-                      onChange={(e) => field('aiProfileId', e.target.value)}
-                    >
-                      <option value="">跟随默认配置</option>
-                      {data.aiProfiles.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
                 </details>
               </>
             )}
+            <Field
+              label="AI 配置"
+              hint="仅用于此对话；重连后继续使用所选配置。自定义模型请先在设置中添加。"
+            >
+              <select
+                aria-label="AI 配置"
+                value={aiProfileId}
+                onChange={(e) => setAIProfileId(e.target.value)}
+              >
+                <option value="">
+                  使用主机 / 默认配置（
+                  {data.aiProfiles.find((p) => p.id === inheritedProfileId)?.name || '本机 Codex'}）
+                </option>
+                <option value="builtin-codex">本机 Codex（使用 CLI 默认配置）</option>
+                {data.aiProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ·{' '}
+                    {p.provider === 'codex'
+                      ? 'Codex'
+                      : p.provider === 'model'
+                        ? '兼容 OpenAI API'
+                        : p.provider === 'claude'
+                          ? 'Claude Code'
+                          : p.provider === 'deepseek'
+                            ? 'DeepSeek'
+                            : 'HTTP Agent'}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <WorkspaceField
               value={workspace}
               disabled={!workspaceSupported}

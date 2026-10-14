@@ -253,7 +253,7 @@ func TestAlwaysYesNotificationWaitsForReviewOutcome(t *testing.T) {
 				select {
 				case event := <-a.events:
 					a.handleEvent(event)
-					if _, done := event.(alwaysYesRiskEvent); !done {
+					if _, done := unwrapAgentTestEvent(event).(alwaysYesRiskEvent); !done {
 						continue
 					}
 					if risk == "read_only" {

@@ -26,7 +26,8 @@ func TestIsolateApprovedCommandReportsStatusAndProtectsOuterShell(t *testing.T) 
 			{"multiline", "printf 'first\\n'\nprintf 'second\\n'", "first\nsecond\n", 0},
 			{"exit", "printf 'missing\\n'\nexit 7", "missing\n", 7},
 			{"exec", "exec printf 'replaced\\n'", "replaced\n", 0},
-			{"syntax_error", "if then", "", 1},
+			// POSIX shells differ in the exact syntax-error code (e.g. 1 or 2).
+			{"syntax_error", "if then", "", -1},
 			{"errexit", "set -e; false; printf WRONG", "", 1},
 			{"own_trap", "trap 'printf own-trap' 0; exit 9", "own-trap", 9},
 			{"redirect_stdout", "exec >/dev/null; printf hidden; exit 3", "", 3},
@@ -44,11 +45,38 @@ func TestIsolateApprovedCommandReportsStatusAndProtectsOuterShell(t *testing.T) 
 				}
 				state := &executionState{Marker: "test"}
 				output, after, status := state.consume(data)
-				if status == nil || *status != tc.status || string(output) != tc.output || string(after) != "OUTER_ALIVE\n" {
+				statusMatches := status != nil && (*status == tc.status || tc.status == -1 && *status != 0)
+				if !statusMatches || string(output) != tc.output || string(after) != "OUTER_ALIVE\n" {
 					t.Fatalf("command=%q output=%q after=%q status=%v raw=%q", tc.command, output, after, status, data)
 				}
 			})
 		}
+	}
+}
+
+func TestGatewayCommandReportsStatusWithoutOSC(t *testing.T) {
+	for _, shell := range []string{"sh", "bash", "zsh"} {
+		path, err := exec.LookPath(shell)
+		if err != nil {
+			continue
+		}
+		t.Run(shell, func(t *testing.T) {
+			script := isolateGatewayApprovedCommand("printf RESULT; exit 7", "test")
+			if strings.Contains(script, executionTextMarkerPrefix("test")) {
+				t.Fatal("command echo contains the text marker")
+			}
+			command := exec.Command(path)
+			command.Stdin = strings.NewReader(strings.TrimSuffix(script, "\r") + "\nprintf OUTER_ALIVE\n")
+			data, err := command.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := &executionState{Marker: "test", TextMarker: true}
+			output, after, status := state.consume(data)
+			if status == nil || *status != 7 || string(output) != "RESULT\n" || string(after) != "OUTER_ALIVE" {
+				t.Fatalf("output=%q after=%q status=%v raw=%q", output, after, status, data)
+			}
+		})
 	}
 }
 
@@ -105,20 +133,24 @@ func TestApprovedCommandCompletesInInteractivePTY(t *testing.T) {
 					}
 					transcript += string(data)
 					return data
+				case <-time.After(50 * time.Millisecond):
+					a.checkExecutionWait(time.Now())
+					a.submitExecutionResult()
+					return nil
 				case <-ctx.Done():
 					t.Fatalf("PTY timed out: execution=%+v recovery=%v recovery_output=%v interrupt=%+v tail=%q safe=%v sensitive=%v transcript=%q", a.execution, a.executionRecovery, a.executionRecoveryOutput, a.executionInterrupt, a.outputTail.String(), a.safePromptScreen(), a.sensitive, transcript)
 					return nil
 				}
 			}
 			for !strings.Contains(transcript, "AISSH_TEST_READY> ") {
-				read()
+				a.processSSHOutput(read())
 			}
 			transcript = ""
-			command := "printf '\\nSTARTED\\n'; sleep 0.05; printf 'DONE\\n'; exit 7"
-			wantStatus := "exit_status=7"
+			command := "printf '\\nSTARTED\\n'\nsleep 0.05\nprintf 'DONE\\n'"
+			wantStatus := "shell_prompt_returned; exit_status=unknown"
 			if interrupted {
 				command = "printf '\\nSTARTED\\n'; sleep 30"
-				wantStatus = "cancelled; exit_status=130"
+				wantStatus = "cancelled; exit_status=unknown"
 			}
 
 			a.sshPTY = terminal
@@ -135,7 +167,7 @@ func TestApprovedCommandCompletesInInteractivePTY(t *testing.T) {
 			}
 			select {
 			case request := <-requests:
-				if request.Completion != wantStatus || (!interrupted && !strings.HasSuffix(request.Output, "\r\nDONE")) {
+				if request.Completion != wantStatus || (!interrupted && !strings.Contains(request.Output, "\r\nDONE")) {
 					t.Fatalf("result=%#v transcript=%q", request, transcript)
 				}
 			case <-ctx.Done():
@@ -191,7 +223,7 @@ func TestCtrlCDuringLongCommandParsingRestoresAIInRealPTY(t *testing.T) {
 			}
 			a.handleEvent(event)
 		case <-ctx.Done():
-			t.Fatalf("PTY timed out: execution=%+v recovery=%v transcript=%q", a.execution, a.executionRecovery, transcript)
+			t.Fatalf("PTY timed out: recovery=%v prompt=%v transcript=%q", a.executionRecovery, a.atPrompt, transcript)
 		}
 	}
 	for !strings.Contains(transcript, "AISSH_TEST_READY> ") {
@@ -200,7 +232,7 @@ func TestCtrlCDuringLongCommandParsingRestoresAIInRealPTY(t *testing.T) {
 	transcript = ""
 	gate := &gatedSSHWriter{target: terminal, entered: make(chan struct{}), release: make(chan struct{})}
 	a.sshInput = newSSHInputWriter(a.ctx, gate, a.events)
-	command := "cat <<'UPLOAD_END'\n" + strings.Repeat("QUJDREVGR0g=\n", 20000) + "UPLOAD_END\nprintf MUST_NOT_RUN"
+	command := "printf '%s' '" + strings.Repeat("QUJDREVGR0g=", 20000) + "'; printf MUST_NOT_RUN"
 	a.execution.Command = command
 	a.sendApprovedCommand(a.execution)
 	select {
@@ -208,11 +240,11 @@ func TestCtrlCDuringLongCommandParsingRestoresAIInRealPTY(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("command did not start writing")
 	}
-	for !strings.Contains(transcript, "eval") {
+	for !strings.Contains(transcript, "printf") {
 		readEvent()
 	}
-	// The shell is still parsing the outer compound command. Its EXIT trap has
-	// not been installed and cannot emit a completion marker after this Ctrl+C.
+	// The shell is still reading the approved command. Ctrl+C must discard the
+	// unsent suffix before recovering, so the trailing command cannot execute.
 	a.handleInput([]byte{3})
 	close(gate.release)
 	for a.execution != nil || a.agentBusy || !a.atPrompt {

@@ -66,19 +66,20 @@ func (a *App) executeResource(command, proposalID, sessionID string, approved bo
 	language := a.agentLanguage
 	panelContext := agent.Request{}
 	a.addPanelContext(&panelContext)
+	opScope := a.beginAgentOperation()
 	go func() {
 		if !approved {
 			// Saved grants authorize this operation locally. Notify stateful
 			// providers before submitting its result, just as manual approval does.
-			if _, err := a.agent.Action(a.ctx, agent.Request{Event: "approve", SessionID: sessionID, ProposalID: proposalID}); err != nil {
+			if _, err := a.agent.Action(opScope.ctx, agent.Request{Event: "approve", SessionID: sessionID, ProposalID: proposalID}); err != nil {
 				if a.config.DesktopUI {
-					a.sendAgentEvent(sshActivityEvent{proposalID, "failed", a.safeText(err.Error())})
+					opScope.send(sshActivityEvent{proposalID, "failed", a.safeText(err.Error())})
 				}
-				a.events <- executionResultEvent{err: fmt.Errorf("%s", a.safeText(err.Error()))}
+				opScope.send(executionResultEvent{err: fmt.Errorf("%s", a.safeText(err.Error()))})
 				return
 			}
 		}
-		result, err := a.config.Resources.Execute(a.ctx, op, approved)
+		result, err := a.config.Resources.Execute(opScope.ctx, op, approved)
 		completion := "操作成功"
 		if err != nil {
 			result = err.Error()
@@ -89,22 +90,22 @@ func (a *App) executeResource(command, proposalID, sessionID string, approved bo
 			if err != nil {
 				status = "failed"
 			}
-			a.sendAgentEvent(sshActivityEvent{proposalID, status, a.safeText(result)})
+			opScope.send(sshActivityEvent{proposalID, status, a.safeText(result)})
 		}
 		request := agent.Request{Event: "result", SessionID: sessionID, ProposalID: proposalID, Output: result, Completion: completion, SystemContext: map[string]string{"response_language": language}}
 		for key, value := range panelContext.SystemContext {
 			request.SystemContext[key] = value
 		}
 		a.prepareAgentRequest(&request)
-		turn, streamErr := a.agent.Stream(a.ctx, request, agent.Callbacks{
-			OnStatus:   func(s string) { a.sendAgentEvent(agentStatusEvent{status: a.safeText(s)}) },
-			OnThought:  func(s string) { a.sendAgentEvent(agentThoughtEvent{content: a.safeText(s)}) },
-			OnAnswer:   func(s string) { a.sendAgentEvent(agentAnswerEvent{content: s}) },
-			OnActivity: func(value agent.Activity) { a.sendAgentEvent(agentActivityEvent{activity: value}) },
+		turn, streamErr := a.agent.Stream(opScope.ctx, request, agent.Callbacks{
+			OnStatus:   func(s string) { opScope.send(agentStatusEvent{status: a.safeText(s)}) },
+			OnThought:  func(s string) { opScope.send(agentThoughtEvent{content: a.safeText(s)}) },
+			OnAnswer:   func(s string) { opScope.send(agentAnswerEvent{content: s}) },
+			OnActivity: func(value agent.Activity) { opScope.send(agentActivityEvent{activity: value}) },
 		})
 		if streamErr != nil {
 			streamErr = fmt.Errorf("%s", a.safeText(streamErr.Error()))
 		}
-		a.events <- executionResultEvent{turn: turn, err: streamErr}
+		opScope.send(executionResultEvent{turn: turn, err: streamErr})
 	}()
 }

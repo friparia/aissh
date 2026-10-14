@@ -191,3 +191,30 @@ func TestURLValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestAIProfilesAllowRemoteHTTP(t *testing.T) {
+	for _, provider := range []string{"model", "deepseek", "http"} {
+		for _, endpoint := range []string{"http://models.internal:8000/v1", "http://192.168.1.100:8000/v1", "http://[2001:db8::1]:8000/v1", "https://models.example/v1"} {
+			t.Run(provider+"/"+endpoint, func(t *testing.T) {
+				store := New(t.TempDir(), &memorySecrets{values: make(map[string]string)})
+				saved, err := store.SaveAIProfile(AIProfile{Name: "custom", Provider: provider, URL: endpoint, Model: "custom-model"}, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := store.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				profile, err := data.AIProfile(saved.ID)
+				if err != nil || profile.URL != endpoint || data.DefaultAIProfileID != saved.ID {
+					t.Fatalf("profile=%+v err=%v", profile, err)
+				}
+			})
+		}
+	}
+	for _, endpoint := range []string{"http://u:p@remote.test", "http://remote.test/?token=secret", "http://remote.test/#secret", "http://remote.test:0", "http://remote.test:65536", "file:///etc/passwd", "http:///v1"} {
+		if _, err := AIServiceURL(endpoint); err == nil {
+			t.Fatalf("accepted invalid AI endpoint %s", endpoint)
+		}
+	}
+}

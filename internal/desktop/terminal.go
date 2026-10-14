@@ -23,6 +23,7 @@ type terminalSession struct {
 
 	mu                sync.Mutex
 	id, hostID        string
+	aiProfileID       string
 	cmd               *exec.Cmd
 	pty               io.ReadWriteCloser
 	cancel            context.CancelFunc
@@ -74,6 +75,18 @@ func (s *Service) createSession(hostID, conversationID string) (SessionInfo, err
 	if err != nil {
 		return SessionInfo{}, err
 	}
+	selected := ""
+	if conversationID != "" {
+		conversation, err := s.conversation(hostID, conversationID)
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		selected = conversation.AIProfileID
+	}
+	selected, _, err = conversationAIProfile(d, h, selected)
+	if err != nil {
+		return SessionInfo{}, err
+	}
 	if _, err := cliPath(); err != nil {
 		return SessionInfo{}, err
 	}
@@ -103,7 +116,7 @@ func (s *Service) createSession(hostID, conversationID string) (SessionInfo, err
 	}
 	id := catalog.NewID()
 	info := SessionInfo{ID: id, HostID: hostID, ConversationID: conversationID, Name: h.Name, Address: h.Address, Port: h.Port, User: h.User, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "starting"}
-	s.sessions[id] = &terminalSession{id: id, hostID: hostID, info: info}
+	s.sessions[id] = &terminalSession{id: id, hostID: hostID, aiProfileID: selected, info: info}
 	return info, nil
 }
 func (s *Service) session(id string) (*terminalSession, error) {
@@ -157,7 +170,7 @@ func (s *Service) StartSession(id string, cols, rows int) (startErr error) {
 		return err
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
-	args := []string{"--no-workspace", "--profile", session.hostID}
+	args := []string{"--no-workspace", "--profile", session.hostID, "--ai-profile", session.aiProfileID}
 	if session.info.ConversationID != "" {
 		args = append(args, "--history-dir", s.history.Dir, "--conversation", session.info.ConversationID)
 	}

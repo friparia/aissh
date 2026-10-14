@@ -56,6 +56,10 @@ func (a *App) startAI(prompt string, foreground bool) {
 	if prompt == "" {
 		return
 	}
+	if a.terminalTakeover {
+		a.appendPersistentChat(chatMessage{Role: "system", Content: "请先在终端完成或退出审批，回到 Shell 提示符后再向 AI 提问。", Time: time.Now()})
+		return
+	}
 	if a.monitorReview != nil || a.config.DesktopUI && (a.proposal != nil || a.execution != nil || a.executionRecovery) {
 		a.chat = append(a.chat, chatMessage{Role: "system", Content: "请先处理当前命令建议或等待执行完成。", Time: time.Now()})
 		return
@@ -113,7 +117,7 @@ func (a *App) startAI(prompt string, foreground bool) {
 		request.SystemContext["conversation_history"] = a.agentSeedContext
 	}
 	a.addPanelContext(&request)
-	go a.runAgentStream(request, true)
+	a.launchAgentStream(request, true)
 }
 
 // Keep an in-flight sidebar conversation visible when its pane is hidden.
@@ -152,27 +156,32 @@ func (a *App) mirrorActiveAIInline() {
 	a.terminalRows = nil
 }
 
-func (a *App) runAgentStream(request agent.Request, retrySession bool) {
+func (a *App) launchAgentStream(request agent.Request, retrySession bool) {
 	a.prepareAgentRequest(&request)
+	op := a.beginAgentOperation()
+	go a.runAgentStream(op, request, retrySession)
+}
+
+func (a *App) runAgentStream(op agentOperation, request agent.Request, retrySession bool) {
 	callbacks := agent.Callbacks{
-		OnStatus:   func(value string) { a.sendAgentEvent(agentStatusEvent{status: value}) },
-		OnThought:  func(value string) { a.sendAgentEvent(agentThoughtEvent{content: value}) },
-		OnAnswer:   func(value string) { a.sendAgentEvent(agentAnswerEvent{content: value}) },
-		OnActivity: func(value agent.Activity) { a.sendAgentEvent(agentActivityEvent{activity: value}) },
+		OnStatus:   func(value string) { op.send(agentStatusEvent{status: value}) },
+		OnThought:  func(value string) { op.send(agentThoughtEvent{content: value}) },
+		OnAnswer:   func(value string) { op.send(agentAnswerEvent{content: value}) },
+		OnActivity: func(value agent.Activity) { op.send(agentActivityEvent{activity: value}) },
 		OnPanelAction: func(value agent.PanelAction) {
-			a.sendAgentEvent(agentPanelEvent{action: value})
+			op.send(agentPanelEvent{action: value})
 		},
 	}
-	turn, err := a.agent.Stream(a.ctx, request, callbacks)
+	turn, err := a.agent.Stream(op.ctx, request, callbacks)
 	if err != nil {
 		err = fmt.Errorf("%s", a.safeText(err.Error()))
 	}
 	if err != nil && retrySession && request.SessionID != "" && strings.Contains(strings.ToLower(err.Error()), "session not found") {
 		request.Event = "start"
 		request.SessionID = ""
-		turn, err = a.agent.Stream(a.ctx, request, callbacks)
+		turn, err = a.agent.Stream(op.ctx, request, callbacks)
 	}
-	a.events <- agentTurnEvent{turn: turn, err: err}
+	op.send(agentTurnEvent{turn: turn, err: err})
 }
 
 func (a *App) appendAssistantDelta(content string) {
@@ -215,6 +224,7 @@ func (a *App) finishAgentTurn(turn agent.Turn, err error) {
 	}
 	if turn.Session.ID != "" {
 		a.agentSessionID = turn.Session.ID
+		a.rememberCodexThread(turn.Session.ID)
 		a.agentSeedContext = ""
 	}
 	if turn.Message != "" {
@@ -337,20 +347,21 @@ func (a *App) startAlwaysYesRiskAssessment(proposal agent.Proposal) {
 	}
 	request.Proposal.Explanation = a.safeText(request.Proposal.Explanation)
 	request.Proposal.ExpectedEffect = a.safeText(request.Proposal.ExpectedEffect)
+	op := a.beginAgentOperation()
 	go func() {
 		assessments := make([]agent.RiskAssessment, 0, AlwaysYesRiskAssessmentPasses)
 		for pass := 1; pass <= AlwaysYesRiskAssessmentPasses; pass++ {
 			if pass > 1 {
-				a.events <- alwaysYesRiskProgressEvent{pass: pass, total: AlwaysYesRiskAssessmentPasses}
+				op.send(alwaysYesRiskProgressEvent{pass: pass, total: AlwaysYesRiskAssessmentPasses})
 			}
-			assessment, err := assessor.AssessRisk(a.ctx, request)
+			assessment, err := assessor.AssessRisk(op.ctx, request)
 			if err != nil {
-				a.events <- alwaysYesRiskEvent{proposalID: proposal.ID, assessments: assessments, err: err}
+				op.send(alwaysYesRiskEvent{proposalID: proposal.ID, assessments: assessments, err: err})
 				return
 			}
 			assessments = append(assessments, assessment)
 		}
-		a.events <- alwaysYesRiskEvent{proposalID: proposal.ID, assessments: assessments}
+		op.send(alwaysYesRiskEvent{proposalID: proposal.ID, assessments: assessments})
 	}()
 }
 
@@ -458,13 +469,15 @@ func (a *App) approveProposal() {
 	a.agentBusy = true
 	a.agentStatus = a.t("正在批准命令")
 	a.approvalStatus = a.t("正在确认并准备写入 SSH……")
+	op := a.beginAgentOperation()
+	sessionID := a.agentSessionID
 	go func() {
-		turn, err := a.agent.Action(a.ctx, agent.Request{
+		turn, err := a.agent.Action(op.ctx, agent.Request{
 			Event:      "approve",
-			SessionID:  a.agentSessionID,
+			SessionID:  sessionID,
 			ProposalID: proposal.ID,
 		})
-		a.events <- approvalEvent{turn: turn, command: proposal.Command, err: err}
+		op.send(approvalEvent{turn: turn, command: proposal.Command, err: err})
 	}()
 }
 
@@ -544,13 +557,15 @@ func (a *App) rejectProposal() {
 	a.agentBusy = true
 	a.agentStatus = a.t("正在拒绝命令")
 	a.approvalStatus = a.t("正在拒绝命令建议……")
+	op := a.beginAgentOperation()
+	sessionID := a.agentSessionID
 	go func() {
-		turn, err := a.agent.Action(a.ctx, agent.Request{
+		turn, err := a.agent.Action(op.ctx, agent.Request{
 			Event:      "reject",
-			SessionID:  a.agentSessionID,
+			SessionID:  sessionID,
 			ProposalID: proposal.ID,
 		})
-		a.events <- rejectionEvent{turn: turn, command: proposal.Command, err: err}
+		op.send(rejectionEvent{turn: turn, command: proposal.Command, err: err})
 	}()
 }
 
@@ -636,18 +651,19 @@ func (a *App) submitExecutionResult() {
 	}
 	a.addPanelContext(&request)
 	a.prepareAgentRequest(&request)
+	op := a.beginAgentOperation()
 	go func() {
 		callbacks := agent.Callbacks{
-			OnStatus:   func(value string) { a.sendAgentEvent(agentStatusEvent{status: value}) },
-			OnThought:  func(value string) { a.sendAgentEvent(agentThoughtEvent{content: value}) },
-			OnAnswer:   func(value string) { a.sendAgentEvent(agentAnswerEvent{content: value}) },
-			OnActivity: func(value agent.Activity) { a.sendAgentEvent(agentActivityEvent{activity: value}) },
+			OnStatus:   func(value string) { op.send(agentStatusEvent{status: value}) },
+			OnThought:  func(value string) { op.send(agentThoughtEvent{content: value}) },
+			OnAnswer:   func(value string) { op.send(agentAnswerEvent{content: value}) },
+			OnActivity: func(value agent.Activity) { op.send(agentActivityEvent{activity: value}) },
 			OnPanelAction: func(value agent.PanelAction) {
-				a.sendAgentEvent(agentPanelEvent{action: value})
+				op.send(agentPanelEvent{action: value})
 			},
 		}
-		turn, err := a.agent.Stream(a.ctx, request, callbacks)
-		a.events <- executionResultEvent{turn: turn, err: err}
+		turn, err := a.agent.Stream(op.ctx, request, callbacks)
+		op.send(executionResultEvent{turn: turn, err: err})
 	}()
 }
 

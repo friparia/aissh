@@ -669,6 +669,7 @@ export function AIEditor({
   createCredential,
 }: { item: AIProfile; data: Catalog; createCredential: CredentialChooser } & Base) {
   const [value, set] = useState({ ...item });
+  const [modelsText, setModelsText] = useState((item.models || []).join('\n'));
   const [isDefault, setDefault] = useState(
     data.defaultAIProfileId === item.id || data.aiProfiles.length === 0,
   );
@@ -682,7 +683,14 @@ export function AIEditor({
     setError('');
     try {
       await api.SaveAIProfile(
-        { ...value, credentialId: local ? '' : value.credentialId, url: local ? '' : value.url },
+        {
+          ...value,
+          models: value.provider === 'model'
+            ? [...new Set(modelsText.split(/[\n,，]/).map((model) => model.trim()).filter(Boolean))]
+            : [],
+          credentialId: local ? '' : value.credentialId,
+          url: local ? '' : value.url,
+        },
         isDefault,
       );
       onSaved();
@@ -710,7 +718,7 @@ export function AIEditor({
             />
           </Field>
           <Field label="AI 后端">
-            <select value={value.provider} onChange={(e) => field('provider', e.target.value)}>
+            <select aria-label="AI 后端" value={value.provider} onChange={(e) => field('provider', e.target.value)}>
               <option value="codex">本机 Codex</option>
               <option value="claude">本机 Claude Code</option>
               <option value="model">兼容 OpenAI API 的模型</option>
@@ -735,7 +743,10 @@ export function AIEditor({
             </>
           ) : (
             <>
-              <Field label={value.provider === 'http' ? 'Agent 流式接口地址' : '模型服务地址'}>
+              <Field
+                label={value.provider === 'http' ? 'Agent 流式接口地址' : '模型服务地址'}
+                hint="支持 HTTP 或 HTTPS 地址，可包含 /v1 等路径。"
+              >
                 <input
                   required
                   value={value.url}
@@ -757,7 +768,17 @@ export function AIEditor({
               />
             </>
           )}
-          <Field label="模型名称" hint={local ? '留空使用 CLI 的默认模型。' : undefined}>
+          {value.provider === 'codex' && (
+            <label className="check">
+              <input type="checkbox" checked={!!value.keepCodexSession}
+                onChange={(e) => set((p) => ({ ...p, keepCodexSession: e.target.checked }))} />
+              退出后保留 Codex 会话，可在本地终端继续（默认删除；下次连接生效）
+            </label>
+          )}
+          <Field
+            label={value.provider === 'model' ? '默认模型名称' : '模型名称'}
+            hint={local ? '留空使用 CLI 的默认模型。' : undefined}
+          >
             <input
               required={!local && value.provider !== 'http'}
               value={value.model}
@@ -765,6 +786,17 @@ export function AIEditor({
               placeholder={local ? '跟随 CLI 默认配置' : '请输入模型名称'}
             />
           </Field>
+          {value.provider === 'model' && (
+            <Field label="可选模型" hint="每行一个模型名称，也可用逗号分隔。默认模型会自动加入，可在会话中切换。">
+              <textarea
+                aria-label="可选模型"
+                rows={4}
+                value={modelsText}
+                onChange={(event) => setModelsText(event.target.value)}
+                placeholder={'model-a\nmodel-b\nmodel-c'}
+              />
+            </Field>
+          )}
           <label className="check">
             <input
               type="checkbox"

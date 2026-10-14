@@ -53,6 +53,15 @@ func (a *App) updateSSHActivity(proposalID, status, detail string) {
 
 func (a *App) finishSSHActivity(execution *executionState) {
 	status, detail := "unknown", execution.completionDescription()
+	if execution.Completion == "shell_prompt_returned" || execution.Completion == "shell_integration_prompt_returned" {
+		status, detail = "completed", a.t("Shell 已返回提示符；退出码未知")
+	}
+	if execution.Completion == "completion_marker_received" {
+		status, detail = "completed", a.t("已收到命令完成标记；退出码未知")
+	}
+	if execution.Completion == "output_collected_manually" {
+		detail = a.t("已手动收集输出；远端命令退出状态未知")
+	}
 	if execution.ExitCode != nil {
 		status = "completed"
 		if *execution.ExitCode != 0 {

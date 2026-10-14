@@ -96,6 +96,8 @@ export const newKnowledge = (kind: Knowledge['kind'] = 'experience'): Knowledge 
   updatedAt: '',
 });
 export interface AIProfile {
+  models?: string[];
+  keepCodexSession?: boolean;
   id: string;
   name: string;
   provider: string;
@@ -129,6 +131,9 @@ export interface Session {
   status: 'starting' | 'running' | 'ended' | 'failed';
 }
 export interface Conversation {
+  aiModel?: string;
+  aiProfileId?: string;
+  codexThreadId?: string;
   id: string;
   hostId: string;
   title: string;
@@ -166,6 +171,12 @@ export interface MonitorPanel {
   pinned: boolean;
 }
 export interface WorkbenchState {
+  terminalTakeover?: boolean;
+  systemCollection: boolean;
+  bastionCompatibility: boolean;
+  model?: string;
+  modelOptions?: string[];
+  codexThreadId?: string;
   workspace: string;
   workspaceSupported: boolean;
   workspaceWritable: boolean;
@@ -184,12 +195,18 @@ export interface WorkbenchState {
   canApprove: boolean;
   approvalStatus: string;
   executing: boolean;
+  canCollectOutput: boolean;
   panels: MonitorPanel[];
   alertMonitors?: MonitorPanel[];
   updatedAt: string;
 }
 export interface WorkbenchCommand {
   kind:
+    | 'execution-collect'
+    | 'terminal-takeover'
+    | 'bastion-compatibility'
+    | 'system-collection'
+    | 'model'
     | 'prompt'
     | 'workspace'
     | 'approve'
@@ -289,6 +306,16 @@ type Backend = ExternalBackend & {
   ListConversations(): Promise<Conversation[]>;
   CreateConversation(hostId: string): Promise<Conversation>;
   CreateConversationWithWorkspace(hostId: string, workspace: string): Promise<Conversation>;
+  CreateConversationWithAI(
+    hostId: string,
+    workspace: string,
+    aiProfileId: string,
+  ): Promise<Conversation>;
+  CreateDirectConversationWithAI(
+    host: Host,
+    saveHost: boolean,
+    aiProfileId: string,
+  ): Promise<{ host: Host; conversation: Conversation }>;
   CreateDirectConversation(
     host: Host,
     saveHost: boolean,

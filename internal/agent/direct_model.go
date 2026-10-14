@@ -67,6 +67,19 @@ func NewDirectModelProvider(label, baseURL, apiKey, model string, requireToken b
 	}
 }
 
+// SetModel keeps the existing conversation history and endpoint credentials.
+func (p *DirectModelProvider) SetModel(model string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Model = model
+}
+
+func (p *DirectModelProvider) CurrentModel() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Model
+}
+
 func (p *DirectModelProvider) Name() string {
 	if p == nil {
 		return "Model"
@@ -75,13 +88,13 @@ func (p *DirectModelProvider) Name() string {
 }
 
 func (p *DirectModelProvider) Configured() bool {
-	return p != nil && strings.TrimSpace(p.BaseURL) != "" && strings.TrimSpace(p.Model) != "" && (!p.RequireToken || strings.TrimSpace(p.APIKey) != "")
+	return p != nil && strings.TrimSpace(p.BaseURL) != "" && strings.TrimSpace(p.CurrentModel()) != "" && (!p.RequireToken || strings.TrimSpace(p.APIKey) != "")
 }
 
 func (p *DirectModelProvider) localizer() i18n.Localizer { return i18n.New(p.Language) }
 
 func (p *DirectModelProvider) Stream(ctx context.Context, request Request, callbacks Callbacks) (Turn, error) {
-	if strings.TrimSpace(p.BaseURL) == "" || strings.TrimSpace(p.Model) == "" {
+	if strings.TrimSpace(p.BaseURL) == "" || strings.TrimSpace(p.CurrentModel()) == "" {
 		return Turn{}, fmt.Errorf("%s", p.localizer().T("直连模型未配置；请设置模型地址和模型名称"))
 	}
 	if p.RequireToken && strings.TrimSpace(p.APIKey) == "" {
@@ -168,7 +181,7 @@ func (p *DirectModelProvider) Stream(ctx context.Context, request Request, callb
 // AssessRisk makes a stateless model request and leaves the main conversation
 // session unchanged.
 func (p *DirectModelProvider) AssessRisk(ctx context.Context, request RiskAssessmentRequest) (RiskAssessment, error) {
-	if strings.TrimSpace(p.BaseURL) == "" || strings.TrimSpace(p.Model) == "" {
+	if strings.TrimSpace(p.BaseURL) == "" || strings.TrimSpace(p.CurrentModel()) == "" {
 		return RiskAssessment{}, fmt.Errorf("%s", p.localizer().T("直连模型未配置；请设置模型地址和模型名称"))
 	}
 	if p.RequireToken && strings.TrimSpace(p.APIKey) == "" {
@@ -246,7 +259,7 @@ func (p *DirectModelProvider) requestText(session *codexSession, request Request
 
 func (p *DirectModelProvider) invoke(ctx context.Context, prompt string, streaming ...Callbacks) (codexResponse, error) {
 	body, err := json.Marshal(directChatRequest{
-		Model:  p.Model,
+		Model:  p.CurrentModel(),
 		Stream: len(streaming) > 0,
 		Messages: []directChatMessage{{
 			Role: "system", Content: prompt,

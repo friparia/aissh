@@ -63,7 +63,10 @@ func prepareManaged(config *app.Config) (func(), error) {
 	if profileID == "" {
 		profileID = data.DefaultAIProfileID
 	}
-	if profileID != "" {
+	config.AIProfileID = profileID
+	if profileID == catalog.BuiltinCodexProfileID {
+		config.AgentProvider = "codex"
+	} else if profileID != "" {
 		p, err := data.AIProfile(profileID)
 		if err != nil {
 			close()
@@ -74,10 +77,16 @@ func prepareManaged(config *app.Config) (func(), error) {
 		config.AgentProvider = p.Provider
 		config.ModelURL = p.URL
 		config.ModelName = p.Model
+		if p.Provider == "model" {
+			config.ModelOptions = p.ModelChoices()
+		}
 		config.ModelAPIKey = ""
 		config.AgentToken = ""
 		config.AgentURL = p.URL
 		config.CodexModel = p.Model
+		if !config.KeepCodexSessionSet {
+			config.KeepCodexSession = p.KeepCodexSession
+		}
 		config.ClaudeModel = p.Model
 		if p.CLIPath != "" {
 			if p.Provider == "codex" {

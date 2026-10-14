@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"git.example.com/ai/wrd-ai-cli/internal/agent"
 	"git.example.com/ai/wrd-ai-cli/internal/credentialui"
 	"git.example.com/ai/wrd-ai-cli/internal/panel"
 	"git.example.com/ai/wrd-ai-cli/internal/policy"
@@ -33,12 +34,21 @@ func (a *App) publishDesktopState() {
 
 func (a *App) desktopState() credentialui.WorkbenchState {
 	state := credentialui.WorkbenchState{
-		Notices:        append([]credentialui.WorkbenchNotice(nil), a.desktopNotices...),
-		ConversationID: a.historyConversationID, Busy: a.agentBusy,
+		TerminalTakeover:     a.terminalTakeover,
+		CanCollectOutput:     a.canCollectExecutionOutput(),
+		SystemCollection:     a.config.SystemCollection,
+		BastionCompatibility: a.config.BastionCompatibility,
+		Notices:              append([]credentialui.WorkbenchNotice(nil), a.desktopNotices...),
+		CodexThreadID:        a.codexThreadID,
+		ConversationID:       a.historyConversationID, Busy: a.agentBusy,
 		Status: a.safeText(a.agentStatus), Executing: a.execution != nil || a.executionRecovery,
 		CanApprove: a.desktopCanApprove(), ApprovalStatus: a.safeText(a.approvalStatus),
 		Messages: []credentialui.WorkbenchMessage{}, Panels: []credentialui.MonitorPanel{},
 		AlertMonitors: []credentialui.MonitorPanel{},
+	}
+	if provider, ok := a.agent.(*agent.DirectModelProvider); ok && agentMode(a.config) == "model" {
+		state.Model = provider.CurrentModel()
+		state.ModelOptions = append([]string(nil), a.config.ModelOptions...)
 	}
 	if provider, ok := a.agent.(localWorkspaceAgent); ok {
 		state.WorkspaceSupported = true
@@ -242,6 +252,35 @@ func (a *App) handleDesktopCommand(command credentialui.WorkbenchCommand) error 
 		return errors.New("操作已过期或连接已结束")
 	}
 	switch command.Kind {
+	case "terminal-takeover":
+		a.takeOverTerminal("已取消本次 AI 交互")
+		return nil
+	case "execution-collect":
+		return a.collectExecutionOutput()
+	case "bastion-compatibility":
+		switch command.Text {
+		case "true":
+			a.config.BastionCompatibility = true
+		case "false":
+			a.config.BastionCompatibility = false
+		default:
+			return errors.New("无效的堡垒机兼容模式设置")
+		}
+		a.dirty = true
+		return nil
+	case "system-collection":
+		switch command.Text {
+		case "true":
+			a.config.SystemCollection = true
+		case "false":
+			a.config.SystemCollection = false
+		default:
+			return errors.New("无效的自动采集设置")
+		}
+		a.dirty = true
+		return nil
+	case "model":
+		return a.switchConversationModel(strings.TrimSpace(command.Text))
 	case "widget-cancel":
 		c := a.widgetCandidates[command.PanelID]
 		if c == nil || c.id != command.CandidateID {
@@ -280,6 +319,9 @@ func (a *App) handleDesktopCommand(command credentialui.WorkbenchCommand) error 
 		a.appendPersistentChat(chatMessage{Role: "system", Content: message, Time: time.Now()})
 		a.dirty = true
 	case "prompt":
+		if a.terminalTakeover {
+			return errors.New("请先在终端完成或退出审批，回到 Shell 提示符后再向 AI 提问")
+		}
 		prompt := strings.TrimSpace(command.Text)
 		if prompt == "" || len(prompt) > 64*1024 {
 			return errors.New("请输入有效的问题（最多 64 KB）")

@@ -14,6 +14,36 @@ type recoveryTestPTY struct{ bytes.Buffer }
 
 func (*recoveryTestPTY) Close() error { return nil }
 
+func TestKnownGatewayShellRecoversInAlternateScreen(t *testing.T) {
+	a, requests := executionTestApp(t)
+	a.sshPTY = &recoveryTestPTY{}
+	execution := a.execution
+	a.execution = nil
+	a.processSSHOutput([]byte("\x1b[?1049h[root@node ~]# "))
+	if !a.atPrompt || !a.gatewayShellPrompt {
+		t.Fatal("gateway shell was not recognised before execution")
+	}
+	a.execution = execution
+	a.atPrompt = false
+	a.processSSHOutput([]byte("\r\ncommand still running\r\n"))
+	a.handleInput([]byte{3})
+	if !a.executionRecovery || a.atPrompt {
+		t.Fatal("interrupt did not wait for a fresh shell prompt")
+	}
+	a.processSSHOutput([]byte("\r\n[root@node ~]# "))
+	if a.executionRecovery || a.execution != nil || !a.atPrompt {
+		t.Fatal("known gateway shell failed to recover in its alternate screen")
+	}
+	select {
+	case request := <-requests:
+		if request.Completion != "cancelled; exit_status=unknown" {
+			t.Fatalf("unexpected completion: %q", request.Completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled command result was not reported")
+	}
+}
+
 func TestCtrlCRecoversMissingMarkerAndReportsUnknownOnce(t *testing.T) {
 	a, requests := executionTestApp(t)
 	terminal := &recoveryTestPTY{}
@@ -81,7 +111,7 @@ func TestCtrlCRecoversMissingMarkerAndReportsUnknownOnce(t *testing.T) {
 		t.Fatal("approval did not resume after recovery")
 	}
 	awaitExecutionWrite(t, a)
-	if a.execution == nil || a.execution.Command != "echo next" || !strings.HasSuffix(terminal.String(), isolateApprovedCommand("echo next", a.execution.Marker)) {
+	if a.execution == nil || a.execution.Command != "echo next" || !strings.HasSuffix(terminal.String(), approvedShellInput("echo next", "")) {
 		t.Fatal("next approved command was not sent after recovery")
 	}
 }

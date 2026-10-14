@@ -216,3 +216,43 @@ func TestAIHistoryPickerRendersAndSupportsKeyboardSelection(t *testing.T) {
 		t.Fatalf("selected id=%q focus=%v chat=%q", application.historyConversationID, application.focus, strings.Join(application.aiLines(80), "\n"))
 	}
 }
+
+func TestCodexRecoveryCommandPersistsOnlyWhenEnabled(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		directory := t.TempDir()
+		first, err := New(Config{SSHArgs: []string{"server"}, HistoryDir: directory, KeepCodexSession: keep})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := "00000000-0000-0000-0000-000000000001"
+		first.rememberCodexThread(id)
+		first.rememberCodexThread(id)
+		conversations, err := chat_history.New(directory).LoadConversations("server")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !keep {
+			if len(conversations) != 0 || first.desktopState().CodexThreadID != "" {
+				t.Fatal("disabled retention exposed a recovery command")
+			}
+			continue
+		}
+		if len(conversations) != 1 || conversations[0].CodexThreadID != id || len(conversations[0].Messages) != 1 {
+			t.Fatalf("conversations=%#v", conversations)
+		}
+		second, err := New(Config{SSHArgs: []string{"server"}, HistoryDir: directory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !second.openAIHistory() || !second.selectHistoryConversation(1) {
+			t.Fatal("cannot select saved conversation")
+		}
+		if second.desktopState().CodexThreadID != id || !strings.Contains(strings.Join(second.aiLines(100), "\n"), "codex resume "+id) {
+			t.Fatal("recovery command was not restored")
+		}
+		second.startNewAIConversation()
+		if second.desktopState().CodexThreadID != "" {
+			t.Fatal("recovery ID leaked into new conversation")
+		}
+	}
+}

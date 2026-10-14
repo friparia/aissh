@@ -75,28 +75,32 @@ func main() {
 
 func parseArgs(args []string) (app.Config, bool, bool, error) {
 	config := app.Config{
-		Version:           version,
-		SSHPath:           firstNonEmpty(os.Getenv("AISSH_SSH_PATH"), "ssh"),
-		AgentProvider:     firstNonEmpty(os.Getenv("AISSH_AGENT_PROVIDER"), os.Getenv("AISSH_AGENT"), "codex"),
-		AgentURL:          os.Getenv("AISSH_AGENT_URL"),
-		AgentToken:        os.Getenv("AISSH_AGENT_TOKEN"),
-		CodexPath:         firstNonEmpty(os.Getenv("AISSH_CODEX_PATH"), "codex"),
-		CodexModel:        os.Getenv("AISSH_CODEX_MODEL"),
-		ClaudePath:        firstNonEmpty(os.Getenv("AISSH_CLAUDE_PATH"), "claude"),
-		ClaudeModel:       os.Getenv("AISSH_CLAUDE_MODEL"),
-		Language:          i18n.Resolve(firstNonEmpty(os.Getenv("AISSH_LANG"), "auto")),
-		HistoryDir:        firstNonEmpty(os.Getenv("AISSH_HISTORY_DIR"), history.DefaultDir()),
-		Workspace:         currentDirectory(),
-		WorkspaceWritable: enabledValue(os.Getenv("AISSH_WORKSPACE_WRITE")),
-		AlwaysYes:         enabledValue(os.Getenv("AISSH_ALWAYS_YES")),
-		InputDebug:        enabledValue(firstNonEmpty(os.Getenv("AISSH_INPUT_DEBUG"), inputDebug)),
-		ModelURL:          os.Getenv("AISSH_MODEL_URL"),
-		ModelAPIKey:       firstNonEmpty(os.Getenv("AISSH_MODEL_API_KEY"), os.Getenv("DEEPSEEK_API_KEY")),
-		ModelName:         os.Getenv("AISSH_MODEL_NAME"),
-		ScrollbackLines:   app.DefaultScrollbackLines,
-		AIContextChars:    app.DefaultAIContextChars,
-		AITimeout:         app.DefaultAITimeout,
-		SSHKeepalive:      app.DefaultSSHKeepalive,
+		Version:              version,
+		SSHPath:              firstNonEmpty(os.Getenv("AISSH_SSH_PATH"), "ssh"),
+		AgentProvider:        firstNonEmpty(os.Getenv("AISSH_AGENT_PROVIDER"), os.Getenv("AISSH_AGENT"), "codex"),
+		AgentURL:             os.Getenv("AISSH_AGENT_URL"),
+		AgentToken:           os.Getenv("AISSH_AGENT_TOKEN"),
+		CodexPath:            firstNonEmpty(os.Getenv("AISSH_CODEX_PATH"), "codex"),
+		CodexModel:           os.Getenv("AISSH_CODEX_MODEL"),
+		KeepCodexSession:     enabledValue(os.Getenv("AISSH_KEEP_CODEX_SESSION")),
+		KeepCodexSessionSet:  os.Getenv("AISSH_KEEP_CODEX_SESSION") != "",
+		ClaudePath:           firstNonEmpty(os.Getenv("AISSH_CLAUDE_PATH"), "claude"),
+		ClaudeModel:          os.Getenv("AISSH_CLAUDE_MODEL"),
+		Language:             i18n.Resolve(firstNonEmpty(os.Getenv("AISSH_LANG"), "auto")),
+		HistoryDir:           firstNonEmpty(os.Getenv("AISSH_HISTORY_DIR"), history.DefaultDir()),
+		Workspace:            currentDirectory(),
+		WorkspaceWritable:    enabledValue(os.Getenv("AISSH_WORKSPACE_WRITE")),
+		AlwaysYes:            enabledValue(os.Getenv("AISSH_ALWAYS_YES")),
+		SystemCollection:     enabledValue(os.Getenv("AISSH_SYSTEM_COLLECTION")),
+		BastionCompatibility: enabledValue(os.Getenv("AISSH_BASTION_COMPATIBILITY")),
+		InputDebug:           enabledValue(firstNonEmpty(os.Getenv("AISSH_INPUT_DEBUG"), inputDebug)),
+		ModelURL:             os.Getenv("AISSH_MODEL_URL"),
+		ModelAPIKey:          firstNonEmpty(os.Getenv("AISSH_MODEL_API_KEY"), os.Getenv("DEEPSEEK_API_KEY")),
+		ModelName:            os.Getenv("AISSH_MODEL_NAME"),
+		ScrollbackLines:      app.DefaultScrollbackLines,
+		AIContextChars:       app.DefaultAIContextChars,
+		AITimeout:            app.DefaultAITimeout,
+		SSHKeepalive:         app.DefaultSSHKeepalive,
 	}
 	if value := strings.TrimSpace(os.Getenv("AISSH_SCROLLBACK_LINES")); value != "" {
 		lines, err := positiveLineCount(value)
@@ -179,6 +183,8 @@ func parseArgs(args []string) (app.Config, bool, bool, error) {
 			return config, false, true, nil
 		case value == "--no-history":
 			config.HistoryDir = ""
+		case value == "--bastion-compatibility" || value == "--ai-keystroke-input":
+			config.BastionCompatibility = true
 		case value == "--conversation":
 			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
 				return config, false, false, fmt.Errorf("--conversation requires an ID")
@@ -196,10 +202,18 @@ func parseArgs(args []string) (app.Config, bool, bool, error) {
 			config.WorkspaceWritable = true
 		case value == "--no-workspace-write":
 			config.WorkspaceWritable = false
+		case value == "--keep-codex-session":
+			config.KeepCodexSession, config.KeepCodexSessionSet = true, true
+		case value == "--no-keep-codex-session":
+			config.KeepCodexSession, config.KeepCodexSessionSet = false, true
 		case value == "--always-yes":
 			config.AlwaysYes = true
 		case value == "--no-always-yes":
 			config.AlwaysYes = false
+		case value == "--system-collection":
+			config.SystemCollection = true
+		case value == "--no-system-collection":
+			config.SystemCollection = false
 		case value == "--no-ai-keepalive" || value == "--no-ssh-keepalive":
 			config.SSHKeepalive = 0
 			config.DisableSSHKeepalive = true
@@ -367,6 +381,8 @@ aissh options:
   --resource JSON     Run an authorised local read-only system operation
   --agent PROVIDER    AI backend: codex, claude, deepseek, model, or http
   --codex-path PATH   Local Codex CLI path; defaults to codex
+  --keep-codex-session Keep Codex threads after exit for local resume (default: delete)
+  --no-keep-codex-session Delete Codex threads after exit
   --codex-model MODEL Codex model; defaults to the local configuration
   --claude-path PATH  Local Claude Code CLI path; defaults to claude
   --claude-model MODEL Claude model; defaults to the local configuration
@@ -380,6 +396,9 @@ aissh options:
   --workspace DIR     Local code workspace (default: current directory)
   --workspace-write   Allow Codex/Claude to modify files in the local workspace
   --always-yes        Auto-approve non-high-risk commands after 3 independent risk reviews
+  --system-collection Enable automatic remote monitor collection (default: off)
+  --no-system-collection Disable automatic remote monitor collection
+  --bastion-compatibility Send approved AI commands verbatim; Ctrl+Y collects output without shell integration
   --no-workspace      Disable local workspace access for Codex/Claude
   --model-url URL     OpenAI-compatible model API base URL
   --model-name MODEL  Direct model name
@@ -428,6 +447,8 @@ aissh选项:
   --resource JSON     执行已授权本机使用的只读系统操作
   --agent PROVIDER    AI 后端：codex、claude、deepseek、model 或 http
   --codex-path PATH   本机 Codex CLI 路径，默认 codex
+  --keep-codex-session 退出后保留 Codex 会话，供本地恢复（默认删除）
+  --no-keep-codex-session 退出后删除 Codex 会话
   --codex-model MODEL 指定 Codex 模型；默认沿用本机配置
   --claude-path PATH  本机 Claude Code CLI 路径，默认 claude
   --claude-model MODEL 指定 Claude 模型；默认沿用本机配置
@@ -441,6 +462,9 @@ aissh选项:
   --workspace DIR     供 Codex/Claude 使用的本机代码工作区，默认当前目录
   --workspace-write   允许 Codex/Claude 修改本机工作区文件（默认只读）
   --always-yes        经 3 次独立风险复核后自动批准非高风险命令
+  --system-collection 开启自动远端监控采集（默认关闭）
+  --no-system-collection 关闭自动远端监控采集
+  --bastion-compatibility 堡垒机兼容模式：原样发送批准的命令，Ctrl+Y 手动收集输出
   --no-workspace      禁止 Codex/Claude 访问本机工作区
   --model-url URL     OpenAI-compatible 模型 API 地址
   --model-name MODEL  直连模型名称

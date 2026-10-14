@@ -97,6 +97,10 @@ aissh -J bastion internal-server
 
 Existing `~/.ssh/config`, keys, SSH agent, jump hosts, and OpenSSH options remain usable.
 
+The desktop session's **Bastion compatibility mode** switch, beside terminal takeover, is off by default. When enabled, approved commands are typed verbatim without added `eval`, subshells, or completion markers. Single-line commands are collected automatically only after remote Shell Integration events; otherwise click **Collect output**. Multiline commands always require manual collection. Prompt regexes cannot trigger collection. Collecting output sends no Ctrl+C and does not assert that the remote command has finished. For the CLI, use `--bastion-compatibility` and Ctrl+Y to collect output.
+
+Automatic system collection is off by default. Explicitly requested monitor probes and mapping verification still require script approval and run once without enabling recurring collection. Manually collected monitor receipts preserve output with an unknown exit status; monitoring maps require a verified successful receipt.
+
 This is intentional.
 
 **aissh changes your local workflow, not your server infrastructure.**
@@ -396,6 +400,10 @@ go test ./...
 go build -o bin/aissh ./cmd/aissh
 ```
 
+The [Build CLI workflow](https://github.com/yuliyang2023/aissh/actions/workflows/build.yml) builds macOS, Linux, and Windows CLI binaries for x86_64 (`amd64`) and aarch64 (`arm64`) on pushes to `main`, `v*` tags, pull requests, and manual runs. Download the archive and `SHA256SUMS` from a run's artifacts. macOS/Linux packages use `.tar.gz`; Windows packages use `.zip` and contain `aissh.exe`.
+
+To build all six packages locally, run `make dist` (Go and `zip` required). Set `BUILD_TARGETS=windows/arm64` to build a single target. Packages are written to `dist/`.
+
 The default backend is the local Codex CLI. Install and sign in to it, then verify it works:
 
 ```bash
@@ -403,6 +411,8 @@ codex exec --ephemeral "reply with ok only"
 ```
 
 Then connect normally:
+
+Codex threads are deleted on exit by default. Use `bin/aissh --keep-codex-session production` or `AISSH_KEEP_CODEX_SESSION=1` to retain them. The AI conversation displays and saves `codex resume <thread-id>` for continuing in a local terminal on the same computer. `--no-keep-codex-session` forces deletion; CLI flags override the environment and saved AI profile. The desktop AI profile has a retention checkbox that applies to the next connection, with a copyable resume command in both live conversations and offline history.
 
 ```bash
 bin/aissh production

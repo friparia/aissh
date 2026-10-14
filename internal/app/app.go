@@ -30,41 +30,46 @@ import (
 )
 
 type Config struct {
-	DesktopUI           bool
-	ProfileID           string
-	AIProfileID         string
-	HostLabel           string
-	HistoryTarget       string
-	ConversationID      string
-	ConversationChanged func(string)
-	SSHEnvironment      []string
-	SecretFilter        *redact.Filter
-	Resources           *resources.Executor
-	Version             string
-	SSHPath             string
-	SSHArgs             []string
-	AgentProvider       string
-	AgentURL            string
-	AgentToken          string
-	CodexPath           string
-	CodexModel          string
-	ClaudePath          string
-	ClaudeModel         string
-	Language            string
-	HistoryDir          string
-	Workspace           string
-	WorkspaceWritable   bool
-	AlwaysYes           bool
-	InputDebug          bool
-	ModelURL            string
-	ModelAPIKey         string
-	ModelName           string
-	ScrollbackLines     int
-	AIContextChars      int
-	AITimeout           time.Duration
-	SSHKeepalive        time.Duration
-	DisableSSHKeepalive bool
-	ShellTMOUT          time.Duration
+	DesktopUI            bool
+	ProfileID            string
+	AIProfileID          string
+	HostLabel            string
+	HistoryTarget        string
+	ConversationID       string
+	ConversationChanged  func(string)
+	SSHEnvironment       []string
+	SecretFilter         *redact.Filter
+	Resources            *resources.Executor
+	Version              string
+	SSHPath              string
+	SSHArgs              []string
+	AgentProvider        string
+	AgentURL             string
+	AgentToken           string
+	CodexPath            string
+	CodexModel           string
+	KeepCodexSession     bool
+	KeepCodexSessionSet  bool
+	ClaudePath           string
+	ClaudeModel          string
+	Language             string
+	HistoryDir           string
+	Workspace            string
+	WorkspaceWritable    bool
+	AlwaysYes            bool
+	SystemCollection     bool
+	BastionCompatibility bool
+	InputDebug           bool
+	ModelURL             string
+	ModelAPIKey          string
+	ModelName            string
+	ModelOptions         []string
+	ScrollbackLines      int
+	AIContextChars       int
+	AITimeout            time.Duration
+	SSHKeepalive         time.Duration
+	DisableSSHKeepalive  bool
+	ShellTMOUT           time.Duration
 }
 
 const terminalFrameInterval = time.Second / 30
@@ -151,6 +156,7 @@ type App struct {
 	terminalPasteMode       bool
 	terminalPasteBuffer     []byte
 	atPrompt                bool
+	gatewayShellPrompt      bool
 	sensitive               bool
 	lastCommand             string
 	outputTail              *rollingBuffer
@@ -161,8 +167,12 @@ type App struct {
 
 	agent                 agent.Provider
 	agentBusy             bool
+	agentCancel           context.CancelFunc
+	agentGeneration       uint64
+	terminalTakeover      bool
 	agentInline           *inlineAIState
 	agentSessionID        string
+	codexThreadID         string
 	agentStatus           string
 	agentThought          string
 	notifyAI              func(title, message string)
@@ -253,8 +263,16 @@ func New(config Config) (*App, error) {
 			return nil, err
 		}
 		for _, conversation := range conversations {
-			if conversation.ID == config.ConversationID && conversation.Workspace != nil {
-				config.Workspace = *conversation.Workspace
+			if conversation.ID == config.ConversationID {
+				if conversation.Workspace != nil {
+					config.Workspace = *conversation.Workspace
+				}
+				for _, model := range config.ModelOptions {
+					if mode == "model" && model == conversation.AIModel {
+						config.ModelName = model
+						break
+					}
+				}
 				break
 			}
 		}
@@ -330,6 +348,7 @@ func newAgentProvider(config Config) (agent.Provider, error) {
 	switch mode {
 	case "codex", "local":
 		provider := agent.NewCodexProvider(config.CodexPath, config.CodexModel)
+		provider.KeepSession = config.KeepCodexSession
 		provider.Streaming = config.DesktopUI
 		provider.Language = config.Language
 		provider.SetLocalWorkspaceWritable(config.WorkspaceWritable)
@@ -415,6 +434,9 @@ func (a *App) Run() error {
 		a.stopSSH()
 		if closer, ok := a.agent.(interface{ Close() error }); ok {
 			_ = closer.Close()
+		}
+		if !a.config.DesktopUI && a.config.KeepCodexSession && a.codexThreadID != "" {
+			_, _ = fmt.Fprintf(os.Stdout, "\n%s\n", a.t("本地恢复 Codex：codex resume %s", a.codexThreadID))
 		}
 		if a.controlDir != "" {
 			_ = os.RemoveAll(a.controlDir)
@@ -539,6 +561,12 @@ func (a *App) stopSSH() {
 }
 
 func (a *App) writeTerminalOutput(tokens []terminalview.OutputToken) []terminalview.Line {
+	wasAlternate := a.virtual.Mode()&vt10x.ModeAltScreen != 0
+	defer func() {
+		if wasAlternate != (a.virtual.Mode()&vt10x.ModeAltScreen != 0) {
+			a.gatewayShellPrompt = false
+		}
+	}()
 	var history []terminalview.Line
 	for index := 0; index < len(tokens); {
 		token := tokens[index]
@@ -698,6 +726,12 @@ func (a *App) ensureSidebarVisible() {
 }
 
 func (a *App) handleEvent(event interface{}) {
+	if scoped, ok := event.(agentOperationEvent); ok {
+		if scoped.generation != a.agentGeneration {
+			return
+		}
+		event = scoped.event
+	}
 	switch value := event.(type) {
 	case widgetCompiledEvent:
 		a.widgetCompiled(value)
@@ -793,6 +827,9 @@ func (a *App) monitorWorkspaceVisible() bool {
 }
 
 func (a *App) handleOutput(data []byte) {
+	if a.execution != nil && a.execution.Direct && !a.execution.finished() {
+		a.execution.LastOutputAt = time.Now()
+	}
 	a.observeTerminalClear(data)
 	plain := trigger.StripANSI(string(data))
 	a.outputTail.Append(plain)
@@ -801,6 +838,15 @@ func (a *App) handleOutput(data []byte) {
 		a.execution.Output.Append(plain)
 	}
 	a.sensitive = trigger.LooksSensitive(a.outputTail.String())
+	a.refreshGatewayShellPrompt()
+	if a.terminalTakeover {
+		plain := trigger.StripANSI(a.outputTail.String())
+		if trigger.LooksLikePrompt(plain) && a.safePromptScreen() && !a.sensitive {
+			a.terminalTakeover = false
+		} else {
+			a.atPrompt = false
+		}
+	}
 	// Opening a saved AI conversation can focus its editor before SSH has
 	// authenticated. A password prompt must hand input back to the terminal.
 	if a.sensitive && a.focus == focusAI {
@@ -827,7 +873,11 @@ func (a *App) handleOutput(data []byte) {
 			a.outputTail.value = ""
 		}
 	}
-	if a.inBandMonitor == nil && !a.executionRecovery && (a.execution == nil || a.execution.finished()) && a.safePromptScreen() && trigger.LooksLikePrompt(a.outputTail.String()) {
+	promptScreenSafe := a.safePromptScreen()
+	if !promptScreenSafe && len(a.lineInput) == 0 && !a.aiLineCapture {
+		a.atPrompt = false
+	}
+	if !a.terminalTakeover && a.inBandMonitor == nil && !a.executionRecovery && (a.execution == nil || a.execution.finished()) && promptScreenSafe && (trigger.LooksLikePrompt(a.outputTail.String()) || a.gatewayShellPrompt) {
 		if !a.atPrompt {
 			a.promptIdleSince = time.Now()
 		}
@@ -851,8 +901,10 @@ func (a *App) scheduleMonitors() {
 	now := time.Now()
 	a.expireWidgetCandidates(now)
 	a.schedulePipelines(now)
+	if a.config.SystemCollection {
+		a.scheduleInBandMonitor(now)
+	}
 	a.continuePipelineAI()
-	a.scheduleInBandMonitor(now)
 }
 
 func (a *App) applyMonitorResult(value monitorResultEvent) {

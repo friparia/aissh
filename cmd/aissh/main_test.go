@@ -258,3 +258,27 @@ func TestParseArgsSupportsAIContextChars(t *testing.T) {
 		t.Fatal("invalid AI context character count was accepted")
 	}
 }
+
+func TestParseArgsCodexRetention(t *testing.T) {
+	for _, tc := range []struct {
+		env      string
+		flags    []string
+		want     bool
+		explicit bool
+	}{
+		{"", nil, false, false},
+		{"", []string{"--keep-codex-session"}, true, true},
+		{"1", []string{"--no-keep-codex-session"}, false, true},
+		{"0", []string{"--keep-codex-session"}, true, true},
+		{"1", nil, true, true},
+	} {
+		t.Setenv("AISSH_KEEP_CODEX_SESSION", tc.env)
+		config, _, _, err := parseArgs(append(tc.flags, "server"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.KeepCodexSession != tc.want || config.KeepCodexSessionSet != tc.explicit {
+			t.Fatalf("env=%q flags=%v keep=%v explicit=%v", tc.env, tc.flags, config.KeepCodexSession, config.KeepCodexSessionSet)
+		}
+	}
+}

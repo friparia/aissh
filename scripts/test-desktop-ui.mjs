@@ -13,6 +13,8 @@ import { testMonitorResize } from './test-monitor-resize.mjs';
 import { testModalEscape } from './test-modal-escape.mjs';
 import { testStreamingChat } from './test-streaming-chat.mjs';
 import { testMarkdownChat } from './test-markdown-chat.mjs';
+import { testModels } from './test-models.mjs';
+import { testTerminalTakeover } from './test-terminal-takeover.mjs';
 import { testIMEComposer, testWorkbenchIME } from './test-ime-composer.mjs';
 import { installMonitoringMock, testMonitoring, testPet, testPetSessionReads } from './test-monitoring.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,7 +52,7 @@ const context = await browser.newContext({
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
-await page.addInitScript(() => {
+await page.addInitScript((aiSelectionOnly) => {
   const data = {
     version: 1,
     revision: 1,
@@ -97,6 +99,14 @@ await page.addInitScript(() => {
     conversationHosts: JSON.parse(sessionStorage.getItem('test-conversation-hosts') || '[]'),
     recentConnections: JSON.parse(sessionStorage.getItem('recent-test-connections') || '[]'),
   };
+  if (aiSelectionOnly) {
+    data.aiProfiles = [
+      { id: 'model-default', name: '主机模型', provider: 'model' },
+      { id: 'model-custom', name: '自定义服务', provider: 'model' },
+    ];
+    data.defaultAIProfileId = 'model-default';
+    data.hosts[0].aiProfileId = 'model-default';
+  }
   data.hosts.push(...JSON.parse(sessionStorage.getItem('test-direct-saved-hosts') || '[]'));
   const listeners = {};
   let sequence = 1;
@@ -224,6 +234,12 @@ await page.addInitScript(() => {
           persistConversations();
           return { ...c, workspace };
         },
+        CreateConversationWithAI: async (hostId, workspace, aiProfileId) => {
+          const c = await window.go.desktop.Service.CreateConversationWithWorkspace(hostId, workspace);
+          conversations.find(item => item.id === c.id).aiProfileId = aiProfileId;
+          persistConversations();
+          return { ...c, aiProfileId };
+        },
         CreateDirectConversation: async (input, saveHost) => {
           const host = { ...normalizeHost(input), id: 'direct-' + Date.now() + '-' + sequence++ };
           if (saveHost) {
@@ -234,6 +250,12 @@ await page.addInitScript(() => {
             sessionStorage.setItem('test-conversation-hosts', JSON.stringify(data.conversationHosts));
           }
           return { host, conversation: await window.go.desktop.Service.CreateConversationWithWorkspace(host.id, host.workspace) };
+        },
+        CreateDirectConversationWithAI: async (input, saveHost, aiProfileId) => {
+          const result = await window.go.desktop.Service.CreateDirectConversation(input, saveHost);
+          conversations.find(item => item.id === result.conversation.id).aiProfileId = aiProfileId;
+          persistConversations();
+          return { ...result, conversation: { ...result.conversation, aiProfileId } };
         },
         OpenConversationSession: async (hostId, id) => {
           const existing = sessions.find(s => s.hostId === hostId && s.conversationId === id && (s.status === 'starting' || s.status === 'running'));
@@ -265,7 +287,12 @@ await page.addInitScript(() => {
           }
           updateSession(id, 'running');
           const session = sessions.find(s => s.id === id);
+          const conversation = conversations.find(c => c.id === session.conversationId && c.hostId === session.hostId);
+          const host = [...data.hosts, ...data.conversationHosts].find(h => h.id === session.hostId);
+          const profile = data.aiProfiles.find(p => p.id === (conversation?.aiProfileId || host?.aiProfileId || data.defaultAIProfileId));
+          const modelOptions = profile?.provider === 'model' ? [...new Set([profile.model, ...(profile.models || [])].filter(Boolean))] : [];
           workbenches[id] = {
+            model: conversation?.aiModel || profile?.model || '', modelOptions,
             workspace: conversations.find(c => c.id === session.conversationId && c.hostId === session.hostId)?.workspace ?? [...data.hosts, ...data.conversationHosts].find(h => h.id === session.hostId)?.workspace ?? '',
             workspaceSupported: true, workspaceWritable: false,
             conversationId: session.conversationId, busy: false, status: '', canApprove: false, executing: false, approvalStatus: '',
@@ -283,7 +310,20 @@ await page.addInitScript(() => {
         WorkbenchAction: async (id, command) => {
           window.__test.actions.push({ id, ...command });
           const state = workbenches[id];
-          if (command.kind === 'workspace') {
+          if (command.kind === 'terminal-takeover') {
+            state.busy = false;
+            state.executing = false;
+            state.proposal = undefined;
+            state.terminalTakeover = true;
+            publishWorkbench(id);
+          } else if (command.kind === 'model') {
+            if (state.busy || state.executing || state.proposal || !state.modelOptions.includes(command.text)) throw new Error('model unavailable');
+            state.model = command.text;
+            const conversation = conversations.find(c => c.id === state.conversationId && c.hostId === sessions.find(s => s.id === id)?.hostId);
+            if (conversation) conversation.aiModel = command.text;
+            persistConversations();
+            publishWorkbench(id);
+          } else if (command.kind === 'workspace') {
             if (command.text === '/missing') throw new Error('无法访问本机工作目录');
             state.workspace = command.text;
             const conversation = conversations.find(c => c.id === state.conversationId && c.hostId === sessions.find(s => s.id === id)?.hostId);
@@ -326,7 +366,7 @@ await page.addInitScript(() => {
       },
     },
   };
-});
+}, !!process.env.AI_SELECTION_ONLY);
 const out = path.join(root, '.cache/desktop-ui');
 await page.addInitScript(installMonitoringMock, !!process.env.PET_ONLY);
 await mkdir(out, { recursive: true });
@@ -336,7 +376,13 @@ const openSettings = async (name = '主机') => {
 };
 try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  if (process.env.WORKSPACE_ONLY) {
+  if (process.env.TAKEOVER_ONLY) {
+    await testTerminalTakeover(page);
+    assert.deepEqual(errors, []);
+  } else if (process.env.MODELS_ONLY) {
+    await testModels(page, openSettings);
+    assert.deepEqual(errors, []);
+  } else if (process.env.WORKSPACE_ONLY) {
     await testWorkspace(page, out);
     assert.deepEqual(errors, []);
   } else if (process.env.MODAL_ESCAPE_ONLY) {
@@ -384,6 +430,38 @@ try {
     await page.locator('.session-select').first().waitFor();
     await testTerminalScroll(page, out, engine);
     assert.deepEqual(errors, []);
+  } else if (process.env.AI_SELECTION_ONLY) {
+    await page.evaluate(() => { window.__test.trusted = true; });
+    for (const mode of ['existing', 'direct']) {
+      for (const profileId of ['builtin-codex', 'model-custom']) {
+        await page.getByRole('button', { name: '新建会话', exact: true }).first().click();
+        const dialog = page.getByRole('dialog');
+        if (mode === 'direct') {
+          await dialog.getByRole('button', { name: '直接连接', exact: true }).click();
+          await dialog.getByLabel('主机地址', { exact: true }).fill('192.0.2.88');
+        }
+        await dialog.getByLabel('AI 配置', { exact: true }).selectOption(profileId);
+        const workspace = dialog.getByLabel('AI 工作目录（本机）', { exact: true });
+        assert.equal(await workspace.isDisabled(), profileId === 'model-custom');
+        if (profileId === 'builtin-codex') await workspace.fill('/test/project');
+        await dialog.getByRole('button', {
+          name: mode === 'direct' ? '连接并新建对话' : '创建对话',
+          exact: true,
+        }).click();
+        await dialog.waitFor({ state: 'hidden' });
+        const created = await page.evaluate(() => window.__test.conversations[0]);
+        assert.equal(created.aiProfileId, profileId);
+        assert.equal(created.workspace, profileId === 'builtin-codex' ? '/test/project' : '');
+        assert.equal(created.hostId === 'host-one', mode === 'existing');
+        assert.equal(await page.evaluate(() => window.__test.data.hosts[0].aiProfileId), 'model-default');
+      }
+    }
+    await page.reload();
+    await page.getByRole('button', { name: '新建会话', exact: true }).first().waitFor();
+    const retained = await page.evaluate(() => window.__test.conversations.filter(c => c.aiProfileId));
+    assert.equal(retained.length, 4);
+    assert.deepEqual(errors, []);
+    console.log('PASS: Codex and compatible OpenAI model selection in both connection modes, workspace behavior, host defaults and persisted choices');
   } else {
   await page.locator('.session-select').first().waitFor();
   assert.equal(await page.locator('.session-select').count(), 3);

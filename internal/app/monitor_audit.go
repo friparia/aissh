@@ -139,6 +139,11 @@ func (a *App) decideMonitorAudit(approved bool) {
 	a.appendCommandDecision(chatMessage{Role: "user", Content: message, Time: time.Now()})
 	a.monitorReview, a.proposal = nil, nil
 	a.approvalInput, a.approvalStatus = nil, ""
+	if status == "approved" && a.config.BastionCompatibility {
+		// Manual collection pauses recurring work. A new explicit approval can
+		// resume the approved collector once the terminal is ready again.
+		_ = a.resumePausedMonitoring()
+	}
 	a.focus, a.dirty = focusTerminal, true
 }
 

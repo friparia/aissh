@@ -125,7 +125,7 @@ func TestClaudeProviderUsesReadOnlyLocalWorkspace(t *testing.T) {
 		if containsArgs(args, "--dangerously-skip-permissions") {
 			t.Fatalf("unsafe Claude args: %#v", args)
 		}
-		for _, want := range []string{"local_workspace=" + workspace, "本机工作区严格只读", "command_proposal 永远表示将在目标服务器", "不得使用 exit、logout", "隔离子 Shell"} {
+		for _, want := range []string{"local_workspace=" + workspace, "本机工作区严格只读", "command_proposal 永远表示将在目标服务器", "不得使用 exit、logout", "命令按原文直接输入"} {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("workspace prompt missing %q: %s", want, prompt)
 			}

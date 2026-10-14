@@ -76,7 +76,7 @@ func TestGrantedResourceUsesAdapterAndReturnsResultToAgent(t *testing.T) {
 	a.executeResource(op.Command(), "proposal", "session", false)
 	select {
 	case event := <-a.events:
-		result, ok := event.(executionResultEvent)
+		result, ok := unwrapAgentTestEvent(event).(executionResultEvent)
 		if !ok || result.err != nil {
 			t.Fatalf("unexpected event: %#v", event)
 		}

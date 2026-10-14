@@ -33,6 +33,7 @@ func TestMain(m *testing.M) {
 }
 func pipelineTestApp(t *testing.T) *App {
 	a := desktopTestApp(t)
+	a.config.SystemCollection = true
 	a.agent = nil
 	dir := t.TempDir()
 	if err := os.Symlink("/bin/sh", filepath.Join(dir, "sh")); err != nil {
@@ -467,5 +468,28 @@ func TestPipelineAICloseAcceptsExistingPipelineMetadata(t *testing.T) {
 	}
 	if a.panels.ByID(id) != nil || a.pipelineDrafts[id] != nil {
 		t.Fatal("AI close retained live pipeline")
+	}
+}
+
+func TestExplicitProbeAuditsAndCollectsWithAutomaticCollectionDisabled(t *testing.T) {
+	a := pipelineTestApp(t)
+	a.config.SystemCollection = false
+	_, _, err := a.executePanelAction(agent.PanelAction{Action: "probe", Panel: agent.PanelSpec{ID: "explicit", Pipeline: &monitorplan.Request{ProtocolVersion: 2, Sources: []monitorplan.Source{pipelineSource()}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.scheduleMonitors()
+	state := a.desktopState()
+	if a.monitorReview == nil || state.Proposal == nil || !state.CanApprove {
+		t.Fatal("explicit first sample did not publish an approvable audit")
+	}
+	a.approveProposal()
+	pipelinePump(t, a, func() bool { return len(a.pipelineDrafts["explicit"].captures) > 0 })
+	if a.config.SystemCollection {
+		t.Fatal("explicit sampling enabled background collection")
+	}
+	a.scheduleMonitors()
+	if a.inBandMonitor != nil || len(a.pipelineBatches) != 0 {
+		t.Fatal("automatic collection started after the requested first sample")
 	}
 }

@@ -64,7 +64,7 @@ func (s *Service) credentialChannel(session *terminalSession) ([]string, func(),
 		var input struct {
 			CredentialID string `json:"credentialId"`
 		}
-		if json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&input) != nil || !s.boundCredential(session.hostID, input.CredentialID) {
+		if json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&input) != nil || !s.boundCredentialForProfile(session.hostID, input.CredentialID, session.aiProfileID) {
 			http.Error(w, "unbound credential", http.StatusForbidden)
 			return
 		}
@@ -80,6 +80,10 @@ func (s *Service) credentialChannel(session *terminalSession) ([]string, func(),
 	return []string{credentialui.AddressEnv + "=" + listener.Addr().String(), credentialui.CapabilityEnv + "=" + token}, func() { _ = server.Close() }, nil
 }
 func (s *Service) boundCredential(hostID, id string) bool {
+	return s.boundCredentialForProfile(hostID, id, "")
+}
+
+func (s *Service) boundCredentialForProfile(hostID, id, aiProfileID string) bool {
 	d, err := s.store.Load()
 	if err != nil || id == "" {
 		return false
@@ -88,7 +92,10 @@ func (s *Service) boundCredential(hostID, id string) bool {
 	if err != nil {
 		return false
 	}
-	pID := h.AIProfileID
+	pID := aiProfileID
+	if pID == "" {
+		pID = h.AIProfileID
+	}
 	if pID == "" {
 		pID = d.DefaultAIProfileID
 	}

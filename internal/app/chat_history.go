@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"git.example.com/ai/wrd-ai-cli/internal/agent"
 	"git.example.com/ai/wrd-ai-cli/internal/history"
 )
 
@@ -153,6 +154,7 @@ func (a *App) selectHistoryConversation(index int) bool {
 	}
 	a.chat = messages
 	a.historyConversationID = conversation.ID
+	a.codexThreadID = conversation.CodexThreadID
 	if keepRuntimeSession {
 		a.agentSeedContext = ""
 	} else {
@@ -180,6 +182,7 @@ func (a *App) selectHistoryConversation(index int) bool {
 
 func (a *App) startNewAIConversation() {
 	a.historyConversationID = history.NewConversationID()
+	a.codexThreadID = ""
 	a.agentSessionID = ""
 	a.agentSeedContext = ""
 	a.panelActionResults = nil
@@ -248,7 +251,10 @@ func (a *App) persistChatMessage(message chatMessage) {
 		workspace = &value
 	}
 	err := a.historyStore.Append(a.historyTarget, history.Message{
+		AIModel:        a.config.ModelName,
+		AIProfileID:    a.config.AIProfileID,
 		ConversationID: a.historyConversationID,
+		CodexThreadID:  a.codexThreadID,
 		Workspace:      workspace,
 		Role:           message.Role,
 		Content:        message.Content,
@@ -264,4 +270,13 @@ func (a *App) persistChatMessage(message chatMessage) {
 		Content: a.t("本机 AI 历史写入失败：%s", err.Error()),
 		Time:    time.Now(),
 	})
+}
+
+// Save the recovery command even for proposal-only responses with no answer text.
+func (a *App) rememberCodexThread(id string) {
+	if provider, ok := a.agent.(*agent.CodexProvider); !ok || !provider.KeepSession || id == "" || id == a.codexThreadID {
+		return
+	}
+	a.codexThreadID = id
+	a.appendPersistentChat(chatMessage{Role: "system", Content: "本地恢复 Codex：codex resume " + id, Time: time.Now()})
 }

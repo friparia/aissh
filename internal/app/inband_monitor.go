@@ -10,12 +10,15 @@ import (
 	"git.example.com/ai/wrd-ai-cli/internal/monitorplan"
 	"git.example.com/ai/wrd-ai-cli/internal/panel"
 	"git.example.com/ai/wrd-ai-cli/internal/policy"
+	"git.example.com/ai/wrd-ai-cli/internal/trigger"
 	"git.example.com/ai/wrd-ai-cli/internal/widgets"
 )
 
 var inBandMonitorScreenRestore = []byte("\x1b[2K\r")
 
 type inBandMonitorState struct {
+	compatibility   *executionState
+	writeJob        *sshWriteJob
 	visible         bool
 	shown           int
 	after           []byte
@@ -72,6 +75,10 @@ func (a *App) scheduleInBandMonitor(now time.Time) {
 }
 
 func (a *App) canStartInBandMonitor() bool {
+	return a.config.SystemCollection && a.canStartInBandCollection()
+}
+
+func (a *App) canStartInBandCollection() bool {
 	return !a.monitorPrimaryPaused && a.monitorWorkspaceVisible() && a.monitorShellReady()
 }
 
@@ -126,6 +133,18 @@ func (a *App) startInBandCollection(item *panel.Panel, now time.Time, pipelineID
 		startedAt: now,
 	}
 	command := inBandMonitorCommand(marker, item.Command)
+	if a.config.BastionCompatibility {
+		state.compatibility = &executionState{BastionCompatibility: true, Multiline: strings.ContainsAny(item.Command, "\r\n")}
+		if a.virtual != nil {
+			a.virtual.Lock()
+			if line, ok := a.terminalCursorLineLocked(); ok && a.safePromptScreenLocked() && trigger.LooksLikePrompt(line) {
+				state.compatibility.ShellPrompt = strings.TrimSpace(line)
+			}
+			a.virtual.Unlock()
+		}
+		state.visible = true
+		command = rawApprovedShellInput(item.Command)
+	}
 	a.debugInput("primary_monitor start panel=%s cols=%d rows=%d", item.ID, a.mainCols, a.contentRows)
 	a.inBandMonitor = state
 	a.monitorAwaitingPrompt = true
@@ -140,7 +159,9 @@ func (a *App) startInBandCollection(item *panel.Panel, now time.Time, pipelineID
 	}
 	// Only the fresh prompt after the completion marker can release user input.
 	a.outputTail.Append("\n[aissh monitor]\n")
-	if _, err := a.writeSSH([]byte(command)); err != nil {
+	if a.sshInput != nil {
+		state.writeJob = a.sshInput.enqueueApprovedCommand([]byte(command), "", state.compatibility != nil)
+	} else if _, err := a.writeSSH([]byte(command)); err != nil {
 		a.pauseInBandMonitor(fmt.Errorf("%s: %w", a.t("主会话监控已暂停"), err))
 	}
 }
@@ -174,6 +195,13 @@ func (a *App) processInBandMonitorOutput(data []byte) bool {
 	if len(state.buffer)+len(data) > widgets.MaxOutput {
 		state.failureStatus = "too_large"
 		a.pauseInBandMonitor(fmt.Errorf("%s", a.t("监控输出超过 256 KiB，主通道采集已暂停")))
+		return true
+	}
+	if state.compatibility != nil {
+		state.buffer = append(state.buffer, data...)
+		state.compatibility.observeShellIntegration(data)
+		a.renderSSHOutput(data)
+		a.checkBastionMonitorPrompt()
 		return true
 	}
 	visible, complete, content, err := state.consume(data)
@@ -343,6 +371,10 @@ func trimOneTrailingNewline(value []byte) []byte {
 func (a *App) checkInBandMonitorTimeout(now time.Time) {
 	state := a.inBandMonitor
 	if state == nil {
+		return
+	}
+	if state.compatibility != nil {
+		a.checkBastionMonitorPrompt()
 		return
 	}
 	timeout := state.timeout

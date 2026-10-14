@@ -13,10 +13,13 @@ type ErrorMatch struct {
 }
 
 var (
-	ansiPattern      = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
-	promptPattern    = regexp.MustCompile(`(?:^|[\r\n])[^\r\n]{0,240}(?:[$#>%])\s*$`)
-	sensitivePattern = regexp.MustCompile(`(?i)(?:password|passphrase|密码)[^\r\n]{0,80}[:：]\s*$`)
-	errorPatterns    = []struct {
+	ansiPattern   = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+	promptPattern = regexp.MustCompile(`(?:^|[\r\n])[^\r\n]{0,240}(?:[$#>%])\s*$`)
+	// A gateway can leave its alternate screen active while forwarding a shell.
+	// Require a user@host primary prompt there, rather than generic TUI text.
+	shellPromptPattern = regexp.MustCompile(`^(?:\[[^\s@\[\]]+@[^\s\[\]]+ [^\r\n\[\]]*\]|[^\s@]+@[^\s:]+:[^\r\n]*)[$#]\s*$`)
+	sensitivePattern   = regexp.MustCompile(`(?i)(?:password|passphrase|密码)[^\r\n]{0,80}[:：]\s*$`)
+	errorPatterns      = []struct {
 		kind    string
 		pattern *regexp.Regexp
 	}{
@@ -49,6 +52,11 @@ func LooksLikePrompt(value string) bool {
 
 func LooksSensitive(value string) bool {
 	return sensitivePattern.MatchString(StripANSI(value))
+}
+
+func LooksLikeShellPrompt(value string) bool {
+	plain := StripANSI(value)
+	return LooksLikePrompt(plain) && shellPromptPattern.MatchString(plain)
 }
 
 func MatchError(value string) *ErrorMatch {

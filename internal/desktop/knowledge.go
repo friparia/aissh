@@ -328,7 +328,7 @@ func (s *Service) SummarizeConversation(hostID, id string) (catalog.Knowledge, e
 	if err != nil {
 		return catalog.Knowledge{}, err
 	}
-	provider, filter, err := s.knowledgeProvider(hostID)
+	provider, filter, err := s.knowledgeProviderWithModel(hostID, c.AIProfileID, c.AIModel)
 	if err != nil {
 		return catalog.Knowledge{}, err
 	}
@@ -343,29 +343,47 @@ func (s *Service) SummarizeConversation(hostID, id string) (catalog.Knowledge, e
 }
 
 func (s *Service) knowledgeProvider(hostID string) (agent.Provider, *redact.Filter, error) {
+	return s.knowledgeProviderWithAI(hostID, "")
+}
+
+func (s *Service) knowledgeProviderWithAI(hostID, selected string) (agent.Provider, *redact.Filter, error) {
+	return s.knowledgeProviderWithModel(hostID, selected, "")
+}
+
+func (s *Service) knowledgeProviderWithModel(hostID, selected, model string) (agent.Provider, *redact.Filter, error) {
 	d, err := s.store.Load()
 	if err != nil {
 		return nil, nil, err
 	}
-	profileID := ""
+	profileID := selected
 	if hostID != "" {
 		h, err := d.Host(hostID)
 		if err != nil {
 			return nil, nil, err
 		}
-		profileID = h.AIProfileID
+		if profileID == "" {
+			profileID = h.AIProfileID
+		}
 	}
 	if profileID == "" {
 		profileID = d.DefaultAIProfileID
 	}
 	p := catalog.AIProfile{Provider: "codex"}
-	if profileID != "" {
+	if profileID != "" && profileID != catalog.BuiltinCodexProfileID {
 		p, err = d.AIProfile(profileID)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 	filter := redact.New()
+	if p.Provider == "model" {
+		for _, choice := range p.ModelChoices() {
+			if choice == model {
+				p.Model = model
+				break
+			}
+		}
+	}
 	token := ""
 	if p.CredentialID != "" {
 		credential, err := d.Credential(p.CredentialID)

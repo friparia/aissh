@@ -22,7 +22,7 @@ func TestRepeatedApprovedMonitorsRunInInteractiveTerminal(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	a, err := New(Config{SSHArgs: []string{"server"}})
+	a, err := New(Config{SSHArgs: []string{"server"}, SystemCollection: true})
 	if err != nil {
 		t.Fatal(err)
 	}

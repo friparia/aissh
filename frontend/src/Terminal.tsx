@@ -10,11 +10,13 @@ export function Terminal({
   active,
   onReconnect,
   canReconnect,
+  focusRequest = 0,
 }: {
   session: Session;
   active: boolean;
   onReconnect: () => void;
   canReconnect: boolean;
+  focusRequest?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const fit = useRef<FitAddon | null>(null);
@@ -135,6 +137,9 @@ export function Terminal({
       fit.current = null;
     };
   }, [session.id, activated]);
+  useEffect(() => {
+    if (active && focusRequest) terminal.current?.focus();
+  }, [active, focusRequest]);
   useEffect(() => {
     if (active)
       requestAnimationFrame(() => {

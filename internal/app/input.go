@@ -37,6 +37,18 @@ func (a *App) handleInput(data []byte) {
 		a.handleZmodemInput(data)
 		return
 	}
+	if !a.config.DesktopUI && len(data) == 1 && data[0] == 0x19 && !a.terminalPasteMode && !a.aiPasteMode && a.canCollectExecutionOutput() {
+		_ = a.collectExecutionOutput() // Ctrl+Y: local snapshot, no remote input.
+		return
+	}
+	if len(data) == 1 && data[0] == 0x07 && !a.terminalPasteMode && !a.aiPasteMode {
+		a.takeOverTerminal("已取消本次 AI 交互")
+		return
+	}
+	if a.terminalTakeover {
+		a.handleSensitiveTerminalInput(data)
+		return
+	}
 	if a.config.DesktopUI {
 		// Mouse reports and terminal shortcuts belong to the remote application;
 		// the desktop has separate controls for AI and local scrolling.
@@ -420,10 +432,11 @@ func (a *App) finishTerminalPaste(payload []byte) bool {
 	captured := a.aiLineCapture
 	line := string(a.lineInput) + value
 	if !a.config.DesktopUI && a.atPrompt && a.lineReliable && !a.sensitive {
-		// Keep a pasted sidebar command editable locally until Enter. Shell
-		// pastes otherwise lose line tracking and bypass local commands.
+		// Keep pasted local commands editable until Enter. Shell pastes
+		// otherwise lose line tracking and bypass local commands.
 		pastedLine := strings.TrimRight(line, "\n")
-		if _, ok := parseLocalSidebarCommand(pastedLine); ok && !strings.Contains(pastedLine, "\n") {
+		_, sidebarCommand := parseLocalSidebarCommand(pastedLine)
+		if (sidebarCommand || isOpenAIConversationCommand(pastedLine)) && !strings.Contains(pastedLine, "\n") {
 			if !captured && len(a.lineInput) > 0 && a.sshPTY != nil {
 				_, _ = a.writeSSH([]byte{0x15})
 			}
@@ -478,6 +491,15 @@ func (a *App) submitTerminalLine(newline byte) {
 		a.debugInput("submit bytes=%d han=%t ai_syntax=%t prompt=%t reliable=%t captured=%t sensitive=%t", len(line), containsHanInput([]byte(line)), aiSyntax, a.atPrompt, reliable, captured, a.sensitive)
 	}
 	if !a.config.DesktopUI && a.atPrompt && reliable && !a.sensitive {
+		if isOpenAIConversationCommand(line) {
+			if !captured && a.sshPTY != nil {
+				_, _ = a.writeSSH([]byte{0x15})
+			}
+			a.lineAnchored = false
+			a.pendingError = nil
+			a.openAIConversation()
+			return
+		}
 		if _, ok := parseLocalSidebarCommand(line); ok {
 			if !captured && a.sshPTY != nil {
 				_, _ = a.writeSSH([]byte{0x15})
@@ -684,38 +706,20 @@ func (a *App) refreshPromptFromScreen() {
 	if a.atPrompt || a.virtual == nil || a.execution != nil || a.executionRecovery || a.monitorAwaitingPrompt {
 		return
 	}
+	a.refreshGatewayShellPrompt()
 
 	a.virtual.Lock()
-	if a.virtual.Mode()&vt10x.ModeAltScreen != 0 || !a.virtual.CursorVisible() {
+	if !a.safePromptScreenLocked() {
 		a.debugInput("screen_prompt unavailable alt_screen=%t cursor_visible=%t", a.virtual.Mode()&vt10x.ModeAltScreen != 0, a.virtual.CursorVisible())
 		a.virtual.Unlock()
 		return
 	}
 	cursor := a.virtual.Cursor()
-	cols, rows := a.virtual.Size()
-	if cursor.Y < 0 || cursor.Y >= rows || cursor.X < 0 || cols <= 0 {
-		a.virtual.Unlock()
+	visibleLine, ok := a.terminalCursorLineLocked()
+	a.virtual.Unlock()
+	if !ok {
 		return
 	}
-	end := cursor.X
-	if end > cols {
-		end = cols
-	}
-	var line strings.Builder
-	for x := 0; x < end; x++ {
-		char := a.virtual.Cell(x, cursor.Y).Char
-		switch char {
-		case terminalview.WidePlaceholder:
-			continue
-		case 0:
-			line.WriteByte(' ')
-		default:
-			line.WriteRune(char)
-		}
-	}
-	a.virtual.Unlock()
-
-	visibleLine := line.String()
 	trimmedLine := strings.TrimRightFunc(visibleLine, unicode.IsSpace)
 	lastRune, _ := utf8.DecodeLastRuneInString(trimmedLine)
 	matched := trigger.LooksLikePrompt(visibleLine)
@@ -726,6 +730,26 @@ func (a *App) refreshPromptFromScreen() {
 	a.atPrompt = true
 	a.sensitive = false
 	a.promptIdleSince = time.Now()
+}
+
+// The caller holds the virtual terminal lock.
+func (a *App) terminalCursorLineLocked() (string, bool) {
+	cursor := a.virtual.Cursor()
+	cols, rows := a.virtual.Size()
+	if cursor.Y < 0 || cursor.Y >= rows || cursor.X < 0 || cols <= 0 {
+		return "", false
+	}
+	var line strings.Builder
+	for x := 0; x < min(cursor.X, cols); x++ {
+		switch char := a.virtual.Cell(x, cursor.Y).Char; char {
+		case terminalview.WidePlaceholder:
+		case 0:
+			line.WriteByte(' ')
+		default:
+			line.WriteRune(char)
+		}
+	}
+	return line.String(), true
 }
 
 func containsHanInput(data []byte) bool {
@@ -1049,6 +1073,10 @@ func removeLastUTF8Rune(value []byte) []byte {
 	return value[:len(value)-size]
 }
 
+func isOpenAIConversationCommand(line string) bool {
+	return strings.EqualFold(strings.TrimSpace(line), "/ai")
+}
+
 func (a *App) openAIConversation() {
 	a.ensureSidebarVisible()
 	a.focus = focusAI
@@ -1057,6 +1085,9 @@ func (a *App) openAIConversation() {
 }
 
 func (a *App) inputStatus() string {
+	if a.terminalTakeover {
+		return a.t("终端已接管；可输入 Q 退出金库申请，自动采集已暂停")
+	}
 	if a.executionRecovery {
 		return a.t("等待新的 Shell 提示符；Ctrl+C 重新同步")
 	}

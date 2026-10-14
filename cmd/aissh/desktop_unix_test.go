@@ -152,7 +152,7 @@ func TestDesktopCLIHelper(t *testing.T) {
 	if script == "" {
 		return
 	}
-	os.Args = []string{"aissh", "--agent", "http", "--agent-url", os.Getenv("AISSH_TEST_NATIVE_AI"), "--no-history", "--no-workspace", "--ssh-path", script, "server"}
+	os.Args = []string{"aissh", "--agent", "http", "--agent-url", os.Getenv("AISSH_TEST_NATIVE_AI"), "--no-history", "--no-workspace", "--system-collection", "--ssh-path", script, "server"}
 	main()
 	os.Exit(0)
 }

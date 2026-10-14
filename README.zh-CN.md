@@ -97,6 +97,10 @@ aissh -J bastion internal-server
 
 已有的 `~/.ssh/config`、密钥、SSH Agent、跳板机和 OpenSSH 参数都可以继续使用。
 
+桌面会话中，“取消 AI，接管终端”旁边的“堡垒机兼容模式”默认关闭。开启后，已批准的命令逐字符原样发送，不添加 `eval`、子 Shell 或结束标记。单行命令只在收到远端 Shell Integration 控制序列时自动收集；没有集成或使用多行命令时，点击“收集输出”。提示符正则不会触发自动收集，收集操作不会发送 Ctrl+C，也不会断言远端命令已经结束。CLI 使用 `--bastion-compatibility` 开启，按 Ctrl+Y 手动收集。
+
+自动系统采集默认关闭。用户明确请求的监控首采和映射验证仍会进入脚本审批；批准后执行该次采集，不会开启后台周期采集。兼容模式下手动收集的监控回执会保留输出并标记退出状态未知；缺少成功退出回执时，不会通过监控映射验证。
+
 这是 aissh 的设计出发点。
 
 **aissh 改变的是你的本地工作方式，无需改造服务器基础设施。**
@@ -396,6 +400,10 @@ go test ./...
 go build -o bin/aissh ./cmd/aissh
 ```
 
+[Build CLI workflow](https://github.com/yuliyang2023/aissh/actions/workflows/build.yml) 会在推送 `main` 分支、推送 `v*` 标签、创建或更新 PR，以及手动运行时，编译 macOS、Linux、Windows 的 x86_64（`amd64`）和 aarch64（`arm64`）CLI。可在运行记录的 Artifacts 中下载压缩包和 `SHA256SUMS` 校验文件。macOS/Linux 使用 `.tar.gz`，Windows 使用 `.zip`，其中包含 `aissh.exe`。
+
+本地运行 `make dist` 可生成全部六种包（需要 Go 和 `zip`）。设置 `BUILD_TARGETS=windows/arm64` 可只构建一个目标。产物保存在 `dist/`。
+
 默认后端是本机 Codex CLI。安装并登录后，先确认它可以正常工作：
 
 ```bash
@@ -403,6 +411,8 @@ codex exec --ephemeral "只回答 ok"
 ```
 
 然后照常连接：
+
+Codex 会话默认在退出时删除。使用 `bin/aissh --keep-codex-session production` 或 `AISSH_KEEP_CODEX_SESSION=1` 可保留会话；AI 对话会显示并保存 `codex resume <thread-id>`，退出后可在同一台电脑的终端继续。`--no-keep-codex-session` 强制删除，启动参数优先于环境变量及保存的 AI 配置。桌面端可在「设置 → AI 配置」开启「退出后保留 Codex 会话」（下次连接生效），在线对话和离线历史均提供复制恢复命令入口。
 
 ```bash
 bin/aissh production

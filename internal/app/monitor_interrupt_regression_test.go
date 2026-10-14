@@ -16,7 +16,7 @@ func (*interruptCapturePTY) Close() error             { return nil }
 // followed by a fresh shell prompt must never make maintenance send Ctrl+C
 // or repeatedly inject another hidden command into the interactive session.
 func TestMonitorTimeoutNeverInjectsInterruptAfterPromptReturns(t *testing.T) {
-	a, err := New(Config{SSHArgs: []string{"server"}})
+	a, err := New(Config{SSHArgs: []string{"server"}, SystemCollection: true})
 	if err != nil {
 		t.Fatal(err)
 	}

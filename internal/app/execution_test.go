@@ -68,6 +68,42 @@ func executionTestApp(t *testing.T) (*App, chan agent.Request) {
 	return a, requests
 }
 
+func TestGatewayTextMarkerSurvivesSplitReadsAndRejectsEcho(t *testing.T) {
+	marker := "9a27842c5da7404caf89607667293212"
+	for _, ending := range []string{"\n", "\r\n"} {
+		data := "RESULT\r\n" + executionTextMarkerPrefix(marker) + "7" + ending + "[root@node ~]# "
+		for split := 0; split <= len(data); split++ {
+			state := &executionState{Marker: marker, TextMarker: true}
+			var output, after []byte
+			var code *int
+			for _, chunk := range []string{data[:split], data[split:]} {
+				if code != nil {
+					after = append(after, chunk...)
+					continue
+				}
+				before, rest, status := state.consume([]byte(chunk))
+				output = append(output, before...)
+				after = append(after, rest...)
+				code = status
+			}
+			if code == nil || *code != 7 || string(output) != "RESULT\r\n" || string(after) != "[root@node ~]# " {
+				t.Fatalf("split=%d ending=%q output=%q after=%q status=%v", split, ending, output, after, code)
+			}
+		}
+	}
+	state := &executionState{Marker: marker, TextMarker: true}
+	echo := isolateGatewayApprovedCommand("printf OK", marker)
+	if _, _, code := state.consume([]byte(echo)); code != nil {
+		t.Fatal("gateway command echo impersonated completion")
+	}
+	for _, suffix := range []string{"999\n", "x\n", strings.Repeat("1", 1000), "7\a"} {
+		state := &executionState{Marker: marker, TextMarker: true}
+		if _, _, code := state.consume([]byte(executionTextMarkerPrefix(marker) + suffix)); code != nil || len(state.Pending) > len(executionTextMarkerPrefix(marker))+4 {
+			t.Fatalf("malformed marker accepted or retained: %q", suffix)
+		}
+	}
+}
+
 func TestExecutionWaitsForMarkerAcrossPTYReads(t *testing.T) {
 	marker := executionMarkerPrefix("test") + "7\a"
 	for split := 0; split <= len(marker); split++ {

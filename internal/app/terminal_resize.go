@@ -3,8 +3,6 @@ package app
 import (
 	"strings"
 
-	"github.com/hinshun/vt10x"
-
 	"git.example.com/ai/wrd-ai-cli/internal/terminalview"
 	"git.example.com/ai/wrd-ai-cli/internal/trigger"
 )
@@ -52,7 +50,7 @@ func (a *App) resolveInlineResizeAnchors() {
 	a.virtual.Lock()
 	cursor := a.virtual.Cursor()
 	cols, rows := a.virtual.Size()
-	if a.virtual.Mode()&vt10x.ModeAltScreen != 0 || cursor.Y < 0 || cursor.Y >= rows || cursor.X < 0 || cursor.X > cols {
+	if !a.safePromptScreenLocked() || cursor.Y < 0 || cursor.Y >= rows || cursor.X < 0 || cursor.X > cols {
 		a.virtual.Unlock()
 		return
 	}

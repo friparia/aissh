@@ -84,7 +84,7 @@ func (s *Service) GetWorkbench(id string) (*credentialui.WorkbenchState, error) 
 // Commands use their own structured channel. No AI text is pasted into a shell.
 func (s *Service) WorkbenchAction(id string, command credentialui.WorkbenchCommand) error {
 	switch command.Kind {
-	case "workspace", "widget-cancel", "widget-ready", "widget-failed", "widget-restore", "prompt", "approve", "reject", "monitor-open", "monitor-close", "monitor-refresh", "alert-close", "alert-refresh":
+	case "execution-collect", "terminal-takeover", "bastion-compatibility", "system-collection", "model", "workspace", "widget-cancel", "widget-ready", "widget-failed", "widget-restore", "prompt", "approve", "reject", "monitor-open", "monitor-close", "monitor-refresh", "alert-close", "alert-refresh":
 	default:
 		return errors.New("不支持的工作台操作")
 	}

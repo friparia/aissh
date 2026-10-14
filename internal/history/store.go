@@ -24,6 +24,9 @@ const (
 )
 
 type Message struct {
+	AIModel        string          `json:"aiModel,omitempty"`
+	AIProfileID    string          `json:"aiProfileId,omitempty"`
+	CodexThreadID  string          `json:"codexThreadId,omitempty"`
 	Version        int             `json:"version"`
 	Target         string          `json:"target"`
 	ConversationID string          `json:"conversationId,omitempty"`
@@ -35,12 +38,15 @@ type Message struct {
 }
 
 type Conversation struct {
-	ID        string
-	Title     string
-	StartedAt time.Time
-	UpdatedAt time.Time
-	Messages  []Message
-	Workspace *string // nil preserves the host default for older conversations
+	AIModel       string
+	AIProfileID   string
+	CodexThreadID string
+	ID            string
+	Title         string
+	StartedAt     time.Time
+	UpdatedAt     time.Time
+	Messages      []Message
+	Workspace     *string // nil preserves the host default for older conversations
 }
 
 type Store struct {
@@ -120,6 +126,15 @@ func (s *Store) LoadConversations(target string) ([]Conversation, error) {
 			conversations = append(conversations, conversation)
 		}
 		conversation.Messages = append(conversation.Messages, message)
+		if message.AIModel != "" {
+			conversation.AIModel = message.AIModel
+		}
+		if message.AIProfileID != "" {
+			conversation.AIProfileID = message.AIProfileID
+		}
+		if message.CodexThreadID != "" {
+			conversation.CodexThreadID = message.CodexThreadID
+		}
 		if message.Workspace != nil {
 			conversation.Workspace = message.Workspace
 		}

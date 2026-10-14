@@ -176,7 +176,7 @@ func TestBracketedShellPasteStillPassesThrough(t *testing.T) {
 	}
 }
 
-func TestYesExecutesProposalThroughIsolatedShellOnExistingSSHPTY(t *testing.T) {
+func TestYesUsesCompletionReceiptWithoutRecognizedPrompt(t *testing.T) {
 	application, err := New(Config{SSHArgs: []string{"server"}})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestYesExecutesProposalThroughIsolatedShellOnExistingSSHPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := isolateApprovedCommand(command, application.execution.Marker); string(written) != want {
+	if want := approvedShellInput(command, application.execution.Marker); string(written) != want {
 		t.Fatalf("ssh input = %q, want %q", written, want)
 	}
 	conversation := strings.Join(application.aiLines(60), "\n")
@@ -266,7 +266,7 @@ func TestAlwaysYesRunsNonHighRiskCommandAfterThreeReviews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := isolateApprovedCommand("uptime", application.execution.Marker); string(written) != want {
+	if want := approvedShellInput("uptime", application.execution.Marker); string(written) != want {
 		t.Fatalf("ssh input=%q want=%q", written, want)
 	}
 	conversation := strings.Join(application.aiLines(120), "\n")

@@ -60,6 +60,7 @@ export function Monitor({
   aiReady = true,
   onOpenMonitoring,
   alertCount = 0,
+  systemCollection = false,
 }: {
   panels: MonitorPanel[];
   sessionId?: string;
@@ -74,6 +75,7 @@ export function Monitor({
   aiReady?: boolean;
   onOpenMonitoring?: () => void;
   alertCount?: number;
+  systemCollection?: boolean;
 }) {
   const detailsId = useId();
   const [expanded, setExpanded] = useStoredFlag('aissh.monitor.expanded', true);
@@ -153,6 +155,19 @@ export function Monitor({
         </button>
         <div className="monitor-actions" role="group" aria-label="监控操作">
           <div className="monitor-action-group">
+            <button
+              type="button"
+              className="button small"
+              aria-pressed={systemCollection}
+              aria-label={'自动采集：' + (systemCollection ? '开启' : '关闭')}
+              title="控制自动运行远端监控命令；关闭时不进行周期采集"
+              disabled={!online || pending}
+              onClick={() =>
+                void onAction({ kind: 'system-collection', text: String(!systemCollection) })
+              }
+            >
+              自动采集：{systemCollection ? '开' : '关'}
+            </button>
             {sessionId && (
               <WidgetLibrary
                 compact

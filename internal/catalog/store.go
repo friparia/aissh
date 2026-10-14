@@ -257,6 +257,13 @@ func (s *Store) SaveResource(r Resource) (Resource, error) {
 	return r, err
 }
 func (s *Store) SaveAIProfile(p AIProfile, makeDefault bool) (AIProfile, error) {
+	if p.Provider == "model" && len(p.Models) > 0 {
+		p.Model = strings.TrimSpace(p.Model)
+		p.Models = p.ModelChoices()
+		if p.Model == "" && len(p.Models) > 0 {
+			p.Model = p.Models[0]
+		}
+	}
 	if p.ID == "" {
 		p.ID = NewID()
 	}
